@@ -1354,3 +1354,71 @@ def test_categories_migration_preserves_existing_rows_ids_and_is_idempotent(tmp_
     db2.add_category("Salary", "income", 0)  # still works after a second migration pass
     assert any(c["kind"] == "income" for c in db2.list_categories())
     db2.close()
+
+
+def test_categories_migration_rebuilds_old_schema_table(tmp_path):
+    """Verify the migration actually rebuilds the categories table when needed.
+
+    This test creates a database with the OLD schema (CHECK constraint without 'income'),
+    inserts test data, closes it, then opens it via Database() to trigger the migration.
+    This exercises the actual migration code path that was added.
+    """
+    import sqlite3
+    path = str(tmp_path / "old_schema.db")
+
+    # Create a database with the OLD schema (no 'income' in CHECK constraint)
+    conn_old = sqlite3.connect(path)
+    conn_old.row_factory = sqlite3.Row
+    conn_old.execute("PRAGMA foreign_keys = ON")
+
+    # Create the categories table with the OLD CHECK constraint
+    conn_old.execute("""
+        CREATE TABLE categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('need','want','saving')),
+            monthly_budget REAL DEFAULT 0
+        )
+    """)
+
+    # Insert some test data
+    conn_old.execute("INSERT INTO categories(id, name, kind, monthly_budget) VALUES (1, 'Housing', 'need', 500)")
+    conn_old.execute("INSERT INTO categories(id, name, kind, monthly_budget) VALUES (2, 'Entertainment', 'want', 100)")
+    conn_old.execute("INSERT INTO categories(id, name, kind, monthly_budget) VALUES (3, 'Emergency Fund', 'saving', 0)")
+    conn_old.commit()
+
+    # Capture the pre-migration state
+    old_categories = {
+        r["id"]: (r["name"], r["kind"], r["monthly_budget"])
+        for r in conn_old.execute("SELECT id, name, kind, monthly_budget FROM categories")
+    }
+    conn_old.close()
+
+    # Now open the database via the real Database class, which will trigger _migrate()
+    # This should detect the old schema and rebuild the table
+    db = Database(path)
+
+    # Verify that PRAGMA foreign_keys is ON after migration
+    foreign_keys_setting = db.conn.execute("PRAGMA foreign_keys").fetchone()[0]
+    assert foreign_keys_setting == 1, "PRAGMA foreign_keys should be ON (1) after migration"
+
+    # Verify all pre-existing categories are preserved with exact same data
+    current_categories = {
+        c["id"]: (c["name"], c["kind"], c["monthly_budget"])
+        for c in db.list_categories()
+    }
+
+    for cat_id, (old_name, old_kind, old_budget) in old_categories.items():
+        assert cat_id in current_categories, f"Category id {cat_id} was lost during migration"
+        curr_name, curr_kind, curr_budget = current_categories[cat_id]
+        assert curr_name == old_name, f"Category {cat_id} name changed from {old_name} to {curr_name}"
+        assert curr_kind == old_kind, f"Category {cat_id} kind changed from {old_kind} to {curr_kind}"
+        assert curr_budget == old_budget, f"Category {cat_id} budget changed from {old_budget} to {curr_budget}"
+
+    # Verify that we can now add income categories (the whole point of the migration)
+    db.add_category("Salary", "income", 0)
+    income_cats = [c for c in db.list_categories() if c["kind"] == "income"]
+    assert len(income_cats) > 0, "Should be able to add income categories after migration"
+    assert income_cats[0]["name"] == "Salary", "Income category name should be 'Salary'"
+
+    db.close()
