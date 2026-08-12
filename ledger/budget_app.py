@@ -54,6 +54,7 @@ from finance_core import (
     upcoming_card_payments, investment_projection, investment_projection_with_bands,
     budget_run_rate, categories_over_threshold, top_payees, daily_spend_totals,
     detect_recurring_candidates, refresh_profile_csvs, apply_profile_csvs,
+    income_by_category,
 )
 import profiles
 import theme
@@ -1589,7 +1590,7 @@ class BudgetsTab(ScrollableTab):
         self.new_kind = tk.StringVar(value="want")
         self.new_budget = tk.StringVar(value="0")
         ttk.Entry(add_frame, textvariable=self.new_name, width=20).grid(row=0, column=0, padx=4)
-        ttk.Combobox(add_frame, textvariable=self.new_kind, values=["need", "want", "saving"],
+        ttk.Combobox(add_frame, textvariable=self.new_kind, values=["need", "want", "saving", "income"],
                      width=10, state="readonly").grid(row=0, column=1, padx=4)
         ttk.Entry(add_frame, textvariable=self.new_budget, width=10).grid(row=0, column=2, padx=4)
         ttk.Button(add_frame, text="Add Category", style="Accent.TButton",
@@ -1632,9 +1633,10 @@ class BudgetsTab(ScrollableTab):
 
         run_rate_by_cat = {r["category"]["id"]: r for r in budget_run_rate(db, y, m, today=self.app.today)}
 
-        groups = {"need": [], "want": [], "saving": []}
+        groups = {"need": [], "want": [], "saving": [], "income": []}
         for cat in db.list_categories():
             groups[cat["kind"]].append(cat)
+        income_totals = {r["category_id"]: r["total"] for r in income_by_category(db, y, m)}
 
         titles = {"need": "Needs (50%)", "want": "Wants (30%)", "saving": "Savings/Debt (20%)"}
         col = 0
@@ -1682,6 +1684,25 @@ class BudgetsTab(ScrollableTab):
                 ttk.Button(edit_row, text="Set Budget",
                            command=lambda cid=cat["id"], v=budget_var: self._set_budget(cid, v)).pack(
                     side="left", padx=4)
+                ttk.Button(edit_row, text="Delete",
+                           command=lambda cid=cat["id"], name=cat["name"]:
+                               self._delete_category(cid, name)).pack(side="left", padx=4)
+
+        income_frame = Card(self.canvas_frame, title="Income")
+        income_frame.grid(row=0, column=col, sticky="nsew", padx=6)
+        self.canvas_frame.columnconfigure(col, weight=1)
+        if not groups["income"]:
+            ttk.Label(income_frame, text="No income categories yet.",
+                      style="CardDim.TLabel").pack(anchor="w")
+        for cat in groups["income"]:
+            total = income_totals.get(cat["id"], 0.0)
+            row = ttk.Frame(income_frame, style="Card.TFrame")
+            row.pack(fill="x", pady=5)
+            ttk.Label(row, text=f"{cat['name']}: {fmt_money(total, cur)}",
+                      style="Card.TLabel").pack(side="left")
+            ttk.Button(row, text="Delete",
+                       command=lambda cid=cat["id"], name=cat["name"]:
+                           self._delete_category(cid, name)).pack(side="right")
 
     def _set_budget(self, cat_id, var):
         try:
@@ -1689,6 +1710,16 @@ class BudgetsTab(ScrollableTab):
         except ValueError:
             return
         self.app.db.set_category_budget(cat_id, val)
+        self.app.refresh_all()
+
+    def _delete_category(self, cat_id, name):
+        if not messagebox.askyesno("Delete Category", f"Delete '{name}'?"):
+            return
+        try:
+            self.app.db.delete_category(cat_id)
+        except ValueError as e:
+            messagebox.showerror("Cannot Delete", str(e))
+            return
         self.app.refresh_all()
 
 
