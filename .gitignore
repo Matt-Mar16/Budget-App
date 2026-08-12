@@ -1,0 +1,21 @@
+# Real financial data — never version controlled
+ledger/Profiles/
+ledger/Profiles_backup_*/
+statements/
+Statements/
+trip-budget/data/
+trip-budget/Data.xlsx
+
+# Virtual environments
+.venv/
+
+# Python artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# IDE
+.idea/
+
+# Superpowers scratch state (visual-companion brainstorm state, per-plan SDD workspaces)
+.superpowers/
