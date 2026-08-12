@@ -1884,6 +1884,8 @@ class RecurringTab(ScrollableTab):
                 ttk.Label(row, text=text, style="Card.TLabel").pack(side="left")
                 ttk.Button(row, text="Add to Recurring",
                            command=lambda c=cand: self._prefill_from_candidate(c)).pack(side="right")
+                ttk.Button(row, text="Ignore",
+                           command=lambda c=cand: self._ignore_candidate(c)).pack(side="right", padx=6)
 
     def _nearest_frequency(self, avg_days):
         if avg_days <= 10:
@@ -1901,6 +1903,10 @@ class RecurringTab(ScrollableTab):
         next_date = (datetime.date.fromisoformat(cand["last_date"]) +
                      datetime.timedelta(days=round(cand["avg_interval_days"])))
         self.next_date_var.set(next_date.isoformat())
+
+    def _ignore_candidate(self, cand):
+        self.app.db.add_ignored_subscription(cand["payee"])
+        self.refresh()
 
 
 # --------------------------------------------------------------------------
@@ -3232,6 +3238,14 @@ class SettingsTab(ScrollableTab):
         ttk.Button(nav_card, text="Save Navigation", style="Accent.TButton",
                    command=self.save_nav_visibility).pack(anchor="w", pady=(8, 0))
 
+        ignored_subs_card = Card(self, title="Ignored Subscriptions")
+        ignored_subs_card.pack(fill="x", pady=(0, 10))
+        ttk.Label(ignored_subs_card,
+                  text="Dismissed from the Recurring tab's Detected Subscriptions list.",
+                  style="CardDim.TLabel").pack(anchor="w")
+        self.ignored_subs_frame = ttk.Frame(ignored_subs_card, style="Card.TFrame")
+        self.ignored_subs_frame.pack(fill="x", pady=(6, 0))
+
         profile_card = Card(self, title="Profile")
         profile_card._settings_role = "profile_card"
         profile_card.pack(fill="x", pady=(0, 10))
@@ -3416,6 +3430,20 @@ class SettingsTab(ScrollableTab):
 
         self.signed_in_label.config(text=f"Signed in as: {self.app.profile['name']}")
 
+        for w in self.ignored_subs_frame.winfo_children():
+            w.destroy()
+        ignored = db.list_ignored_subscriptions()
+        if not ignored:
+            ttk.Label(self.ignored_subs_frame, text="None ignored.",
+                      style="CardDim.TLabel").pack(anchor="w")
+        for row in ignored:
+            r = ttk.Frame(self.ignored_subs_frame, style="Card.TFrame")
+            r.pack(fill="x", pady=2)
+            ttk.Label(r, text=f"{row['payee']} (dismissed {row['dismissed_date']})",
+                      style="Card.TLabel").pack(side="left")
+            ttk.Button(r, text="Un-ignore",
+                       command=lambda p=row["payee"]: self._unignore_subscription(p)).pack(side="right")
+
         if self.app.currency_mode() == "holiday":
             if not self._fx_visible:
                 self.fx_frame.pack(fill="x", pady=(0, 10), before=self._after_fx_widget())
@@ -3430,6 +3458,10 @@ class SettingsTab(ScrollableTab):
         for code, rate in rates.items():
             self.fx_list.insert("end", f"{code}: 1 {code} = {rate} {self.reporting_currency_var.get()}\n")
         self.fx_list.config(state="disabled")
+
+    def _unignore_subscription(self, payee):
+        self.app.db.remove_ignored_subscription(payee)
+        self.app.refresh_all()
 
     def _after_fx_widget(self):
         """The widget immediately after the FX card's usual slot, so
