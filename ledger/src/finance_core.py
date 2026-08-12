@@ -69,7 +69,7 @@ class Database:
         CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE NOT NULL,
-            kind TEXT NOT NULL CHECK(kind IN ('need','want','saving')),
+            kind TEXT NOT NULL CHECK(kind IN ('need','want','saving','income')),
             monthly_budget REAL DEFAULT 0
         );
 
@@ -309,6 +309,27 @@ class Database:
         debt_cols = existing_cols("debts")
         if "custom_payment" not in debt_cols:
             c.execute("ALTER TABLE debts ADD COLUMN custom_payment REAL DEFAULT 0")
+
+        cat_row = c.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='categories'"
+        ).fetchone()
+        if cat_row and "'income'" not in cat_row["sql"]:
+            c.execute("PRAGMA foreign_keys=OFF")
+            with c:
+                c.execute(
+                    "CREATE TABLE categories_new ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "name TEXT UNIQUE NOT NULL, "
+                    "kind TEXT NOT NULL CHECK(kind IN ('need','want','saving','income')), "
+                    "monthly_budget REAL DEFAULT 0)"
+                )
+                c.execute(
+                    "INSERT INTO categories_new(id, name, kind, monthly_budget) "
+                    "SELECT id, name, kind, monthly_budget FROM categories"
+                )
+                c.execute("DROP TABLE categories")
+                c.execute("ALTER TABLE categories_new RENAME TO categories")
+            c.execute("PRAGMA foreign_keys=ON")
 
         had_contributions_col = "contributions" in acc_cols
 

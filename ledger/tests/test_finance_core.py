@@ -1330,3 +1330,27 @@ def test_apply_profile_csvs_applies_accounts_before_transactions_so_new_names_re
     assert tx["account_name"] == "Brand New Account"
 
     db.close()
+
+
+def test_categories_table_allows_income_kind_after_migration(tmp_path):
+    db = _db(tmp_path)
+    db.add_category("Salary", "income", 0)
+    cats = {c["name"]: c for c in db.list_categories()}
+    assert cats["Salary"]["kind"] == "income"
+    db.close()
+
+
+def test_categories_migration_preserves_existing_rows_ids_and_is_idempotent(tmp_path):
+    path = str(tmp_path / "reopen.db")
+    db = Database(path)
+    db.add_category("Groceries Budget", "need", 200)
+    before = {c["name"]: (c["id"], c["kind"], c["monthly_budget"]) for c in db.list_categories()}
+    db.close()
+
+    # Reopening re-runs _migrate() against an already-migrated file — must no-op cleanly.
+    db2 = Database(path)
+    after = {c["name"]: (c["id"], c["kind"], c["monthly_budget"]) for c in db2.list_categories()}
+    assert after == before
+    db2.add_category("Salary", "income", 0)  # still works after a second migration pass
+    assert any(c["kind"] == "income" for c in db2.list_categories())
+    db2.close()
