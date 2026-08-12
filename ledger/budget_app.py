@@ -1066,6 +1066,54 @@ class TransactionsTab(ScrollableTab):
         ttk.Button(toolbar, text="Export Full CSV…", command=self.app.export_csv_full).pack(
             side="right", padx=6)
 
+        filter_bar = ttk.Frame(list_card, style="Card.TFrame")
+        filter_bar.pack(fill="x", pady=(0, 8))
+
+        ttk.Label(filter_bar, text="Account", style="CardDim.TLabel").pack(side="left")
+        self.filter_account_var = tk.StringVar()
+        self.filter_account_combo = ttk.Combobox(filter_bar, textvariable=self.filter_account_var,
+                                                  width=14, state="readonly")
+        self.filter_account_combo.pack(side="left", padx=(4, 12))
+        self.filter_account_var.trace_add("write", lambda *a: self.refresh())
+
+        ttk.Label(filter_bar, text="Category", style="CardDim.TLabel").pack(side="left")
+        self.filter_category_var = tk.StringVar()
+        self.filter_category_combo = ttk.Combobox(filter_bar, textvariable=self.filter_category_var,
+                                                   width=14, state="readonly")
+        self.filter_category_combo.pack(side="left", padx=(4, 12))
+        self.filter_category_var.trace_add("write", lambda *a: self.refresh())
+
+        ttk.Label(filter_bar, text="Currency", style="CardDim.TLabel").pack(side="left")
+        self.filter_currency_var = tk.StringVar()
+        self.filter_currency_combo = ttk.Combobox(filter_bar, textvariable=self.filter_currency_var,
+                                                   width=8, state="readonly")
+        self.filter_currency_combo.pack(side="left", padx=(4, 12))
+        self.filter_currency_var.trace_add("write", lambda *a: self.refresh())
+
+        ttk.Label(filter_bar, text="Date from", style="CardDim.TLabel").pack(side="left")
+        self.filter_date_from_var = tk.StringVar()
+        ttk.Entry(filter_bar, textvariable=self.filter_date_from_var, width=10).pack(
+            side="left", padx=(4, 6))
+        ttk.Label(filter_bar, text="to", style="CardDim.TLabel").pack(side="left")
+        self.filter_date_to_var = tk.StringVar()
+        ttk.Entry(filter_bar, textvariable=self.filter_date_to_var, width=10).pack(
+            side="left", padx=(4, 12))
+        self.filter_date_from_var.trace_add("write", lambda *a: self.refresh())
+        self.filter_date_to_var.trace_add("write", lambda *a: self.refresh())
+
+        ttk.Label(filter_bar, text="Amount min", style="CardDim.TLabel").pack(side="left")
+        self.filter_amount_min_var = tk.StringVar()
+        ttk.Entry(filter_bar, textvariable=self.filter_amount_min_var, width=8).pack(
+            side="left", padx=(4, 6))
+        ttk.Label(filter_bar, text="max", style="CardDim.TLabel").pack(side="left")
+        self.filter_amount_max_var = tk.StringVar()
+        ttk.Entry(filter_bar, textvariable=self.filter_amount_max_var, width=8).pack(
+            side="left", padx=(4, 12))
+        self.filter_amount_min_var.trace_add("write", lambda *a: self.refresh())
+        self.filter_amount_max_var.trace_add("write", lambda *a: self.refresh())
+
+        ttk.Button(filter_bar, text="Clear Filters", command=self.clear_filters).pack(side="left")
+
         list_frame = ttk.Frame(list_card, style="Card.TFrame")
         list_frame.pack(fill="both", expand=True)
 
@@ -1091,6 +1139,15 @@ class TransactionsTab(ScrollableTab):
         reimb_card.pack(fill="x", pady=(10, 0))
         self.reimb_rows_frame = ttk.Frame(reimb_card, style="Card.TFrame")
         self.reimb_rows_frame.pack(fill="x")
+
+    def clear_filters(self):
+        self.filter_account_var.set("")
+        self.filter_category_var.set("")
+        self.filter_currency_var.set("")
+        self.filter_date_from_var.set("")
+        self.filter_date_to_var.set("")
+        self.filter_amount_min_var.set("")
+        self.filter_amount_max_var.set("")
 
     def mark_as_owed(self):
         sel = self.tree.selection()
@@ -1203,17 +1260,48 @@ class TransactionsTab(ScrollableTab):
         self.accounts_by_name = {a["name"]: a for a in accs}
         self.account_combo["values"] = [""] + list(self.accounts_by_name.keys())
 
+        self.filter_account_combo["values"] = [""] + list(self.accounts_by_name.keys())
+        self.filter_category_combo["values"] = [""] + list(self.categories_by_name.keys())
+        all_txs = self.app.db.list_transactions()
+        self.filter_currency_combo["values"] = [""] + sorted({t["currency"] for t in all_txs})
+
         for row in self.tree.get_children():
             self.tree.delete(row)
         db = self.app.db
         query = self.search_var.get().strip().lower()
-        for t in db.list_transactions():
+        for t in all_txs:
             tags = db.get_transaction_tags(t["id"])
             tags_label = ", ".join(tags)
             haystack = (f"{t['payee'] or ''} {t['category_name'] or ''} {t['note'] or ''} "
                         f"{tags_label}").lower()
             if query and query not in haystack:
                 continue
+            if self.filter_account_var.get() and t["account_name"] != self.filter_account_var.get():
+                continue
+            if self.filter_category_var.get() and t["category_name"] != self.filter_category_var.get():
+                continue
+            if self.filter_currency_var.get() and t["currency"] != self.filter_currency_var.get():
+                continue
+            date_from = self.filter_date_from_var.get().strip()
+            if date_from and t["date"] < date_from:
+                continue
+            date_to = self.filter_date_to_var.get().strip()
+            if date_to and t["date"] > date_to:
+                continue
+            amt_min = self.filter_amount_min_var.get().strip()
+            if amt_min:
+                try:
+                    if t["amount"] < float(amt_min):
+                        continue
+                except ValueError:
+                    pass
+            amt_max = self.filter_amount_max_var.get().strip()
+            if amt_max:
+                try:
+                    if t["amount"] > float(amt_max):
+                        continue
+                except ValueError:
+                    pass
             reporting_amt = db.to_reporting(t["amount"], t["currency"])
             splits = db.get_transaction_splits(t["id"])
             category_label = f"⑃ split ({len(splits)})" if splits else (t["category_name"] or "(none)")
