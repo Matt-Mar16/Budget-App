@@ -1490,7 +1490,9 @@ def test_delete_category_blocked_when_a_transaction_references_it(tmp_path):
     db = _db(tmp_path)
     db.add_account("Checking", "asset", 0.0, currency="GBP")
     acc_id = db.list_accounts()[0]["id"]
-    db.add_category("Groceries", "need", 200)
+    # "Groceries" already exists as a seeded default category — reuse it
+    # rather than re-adding (add_category has no OR IGNORE, so a literal
+    # re-add collides on the UNIQUE name constraint).
     cat_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries")
     db.add_transaction("2026-08-10", "Tesco", cat_id, -50.0, "GBP", account_id=acc_id)
 
@@ -1515,8 +1517,10 @@ def test_delete_category_blocked_when_a_split_references_it(tmp_path):
     db = _db(tmp_path)
     db.add_account("Checking", "asset", 0.0, currency="GBP")
     acc_id = db.list_accounts()[0]["id"]
-    db.add_category("Groceries", "need", 200)
     db.add_category("Household", "want", 100)
+    # "Groceries" already exists as a seeded default category — reuse it
+    # rather than re-adding (add_category has no OR IGNORE, so a literal
+    # re-add collides on the UNIQUE name constraint).
     groceries_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries")
     household_id = next(c["id"] for c in db.list_categories() if c["name"] == "Household")
     db.add_transaction("2026-08-10", "Tesco", groceries_id, -50.0, "GBP", account_id=acc_id)
