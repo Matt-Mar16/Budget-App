@@ -1191,6 +1191,30 @@ def test_apply_categories_csv_adds_and_edits(tmp_path):
     db.close()
 
 
+def test_apply_categories_csv_accepts_income_kind(tmp_path):
+    db = _db(tmp_path)
+    db.add_category("Old Salary Name", "income", 0.0)
+    cat_id = next(c["id"] for c in db.list_categories() if c["name"] == "Old Salary Name")
+
+    csv_path = tmp_path / "categories.csv"
+    _write_csv(csv_path, ["id", "name", "kind", "monthly_budget"], [
+        {"id": str(cat_id), "name": "Salary", "kind": "income", "monthly_budget": "0"},
+        {"id": "", "name": "Freelance Income", "kind": "income", "monthly_budget": "0"},
+    ])
+
+    report = apply_categories_csv(db, str(csv_path))
+
+    assert report["skipped"] == []
+    assert report["added"] == 1
+    assert report["edited"] == 1
+    updated = next(c for c in db.list_categories() if c["id"] == cat_id)
+    assert updated["name"] == "Salary"
+    assert updated["kind"] == "income"
+    assert any(c["name"] == "Freelance Income" and c["kind"] == "income" for c in db.list_categories())
+
+    db.close()
+
+
 def test_apply_investments_csv_adds_and_edits(tmp_path):
     db = _db(tmp_path)
     db.add_account("Index Fund", "asset", 0.0, currency="GBP", subtype="investment")

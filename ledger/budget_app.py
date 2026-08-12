@@ -1263,7 +1263,7 @@ class TransactionsTab(ScrollableTab):
 
         self.filter_account_combo["values"] = [""] + list(self.accounts_by_name.keys())
         self.filter_category_combo["values"] = [""] + list(self.categories_by_name.keys())
-        all_txs = self.app.db.list_transactions()
+        all_txs = self.app.db.list_transactions(limit=100000)
         self.filter_currency_combo["values"] = [""] + sorted({t["currency"] for t in all_txs})
 
         for row in self.tree.get_children():
@@ -1284,11 +1284,19 @@ class TransactionsTab(ScrollableTab):
             if self.filter_currency_var.get() and t["currency"] != self.filter_currency_var.get():
                 continue
             date_from = self.filter_date_from_var.get().strip()
-            if date_from and t["date"] < date_from:
-                continue
+            if date_from:
+                try:
+                    if t["date"] < datetime.date.fromisoformat(date_from).isoformat():
+                        continue
+                except ValueError:
+                    pass
             date_to = self.filter_date_to_var.get().strip()
-            if date_to and t["date"] > date_to:
-                continue
+            if date_to:
+                try:
+                    if t["date"] > datetime.date.fromisoformat(date_to).isoformat():
+                        continue
+                except ValueError:
+                    pass
             amt_min = self.filter_amount_min_var.get().strip()
             if amt_min:
                 try:

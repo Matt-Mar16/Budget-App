@@ -2556,9 +2556,9 @@ def apply_categories_csv(db: Database, path):
         raw_id = (row.get("id") or "").strip()
         name = (row.get("name") or "").strip()
         kind = (row.get("kind") or "").strip()
-        if not name or kind not in ("need", "want", "saving"):
+        if not name or kind not in ("need", "want", "saving", "income"):
             report["skipped"].append(
-                {"id": raw_id, "reason": f"Missing name or invalid kind '{kind}' (need/want/saving)"})
+                {"id": raw_id, "reason": f"Missing name or invalid kind '{kind}' (need/want/saving/income)"})
             continue
         try:
             monthly_budget = float(row.get("monthly_budget") or 0)
