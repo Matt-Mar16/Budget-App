@@ -15,7 +15,7 @@
 - GUI changes in `budget_app.py` have no pytest coverage by established convention (Tkinter has no headless test harness here). Verify each with a one-off headless smoke script: construct `App` directly against a **sandboxed** `profiles.APP_DIR` (a fresh `tempfile.mkdtemp()`, never the real `Profiles/` folder), drive the tab/dialog in code, assert on state, and mock `tkinter.messagebox` functions that would otherwise block waiting for a click.
 - Windows: invoke Python directly as `C:/Users/mateu/AppData/Local/Programs/Python/Python314/python.exe` for one-off scripts (`python3` is not on PATH). The console is cp1252 — prefix smoke-script runs with `PYTHONIOENCODING=utf-8` rather than printing £/emoji characters raw.
 - User-facing validation errors in this codebase are plain `ValueError` with a message naming the specific problem — not custom exception classes (matches `apply_transactions_csv`, `set_transaction_splits`, etc. already in `finance_core.py`).
-- This repo is **not currently a git repository** (`git status` fails with "not a git repository"). The Commit steps below are written as normal — if `git init` hasn't happened by execution time, treat each Commit step as a no-op and move on; don't block on it.
+- This repo was just initialized with git specifically to run this plan (root commit `f08b2f7`, real financial data/PDFs/`.venv` excluded via `.gitignore`). Execution happens in an isolated worktree; Commit steps below run for real, one commit per task.
 
 ---
 
