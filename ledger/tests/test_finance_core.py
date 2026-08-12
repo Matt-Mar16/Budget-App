@@ -8,7 +8,7 @@ import csv as csv_mod
 from finance_core import (
     Database, budget_run_rate, categories_over_threshold, monthly_history, top_payees,
     daily_spend_totals, detect_recurring_candidates, csv_import_preview, csv_import_commit,
-    export_account_statement_csv, category_budget_status, spend_by_kind,
+    export_account_statement_csv, category_budget_status, spend_by_kind, income_by_category,
     export_transactions_editable_csv, export_accounts_editable_csv,
     export_categories_editable_csv, export_investments_editable_csv,
     apply_transactions_csv, apply_accounts_csv, apply_categories_csv, apply_investments_csv,
@@ -1421,4 +1421,111 @@ def test_categories_migration_rebuilds_old_schema_table(tmp_path):
     assert len(income_cats) > 0, "Should be able to add income categories after migration"
     assert income_cats[0]["name"] == "Salary", "Income category name should be 'Salary'"
 
+    db.close()
+
+
+def test_add_ignored_subscription_is_case_insensitively_deduped(tmp_path):
+    db = _db(tmp_path)
+    db.add_ignored_subscription("Netflix")
+    db.add_ignored_subscription("netflix")
+    assert len(db.list_ignored_subscriptions()) == 1
+    db.close()
+
+
+def test_remove_ignored_subscription_deletes_it_case_insensitively(tmp_path):
+    db = _db(tmp_path)
+    db.add_ignored_subscription("Netflix")
+    db.remove_ignored_subscription("netflix")
+    assert db.list_ignored_subscriptions() == []
+    db.close()
+
+
+def test_detect_recurring_candidates_excludes_ignored_payees(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    for d in ("2026-06-01", "2026-07-01", "2026-08-01"):
+        db.add_transaction(d, "Spotify", None, -9.99, "GBP", account_id=acc_id)
+
+    assert len(detect_recurring_candidates(db)) == 1
+
+    db.add_ignored_subscription("Spotify")
+    assert detect_recurring_candidates(db) == []
+    db.close()
+
+
+def test_income_by_category_totals_this_months_positive_transactions(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_category("Salary", "income", 0)
+    salary_id = next(c["id"] for c in db.list_categories() if c["name"] == "Salary")
+    groceries_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries")
+    db.add_transaction("2026-08-01", "Employer", salary_id, 2000.0, "GBP", account_id=acc_id)
+    db.add_transaction("2026-08-05", "Employer", salary_id, 500.0, "GBP", account_id=acc_id)
+    db.add_transaction("2026-08-10", "Tesco", groceries_id, -50.0, "GBP", account_id=acc_id)
+    db.add_transaction("2026-07-01", "Employer", salary_id, 999.0, "GBP", account_id=acc_id)  # different month
+
+    result = income_by_category(db, 2026, 8)
+
+    assert len(result) == 1
+    assert result[0]["category_id"] == salary_id
+    assert result[0]["category_name"] == "Salary"
+    assert result[0]["total"] == pytest.approx(2500.0)
+    db.close()
+
+
+def test_delete_category_removes_an_unused_category(tmp_path):
+    db = _db(tmp_path)
+    db.add_category("Unused", "want", 0)
+    cat_id = next(c["id"] for c in db.list_categories() if c["name"] == "Unused")
+
+    db.delete_category(cat_id)
+
+    assert cat_id not in {c["id"] for c in db.list_categories()}
+    db.close()
+
+
+def test_delete_category_blocked_when_a_transaction_references_it(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_category("Groceries", "need", 200)
+    cat_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries")
+    db.add_transaction("2026-08-10", "Tesco", cat_id, -50.0, "GBP", account_id=acc_id)
+
+    with pytest.raises(ValueError, match="transaction"):
+        db.delete_category(cat_id)
+    assert cat_id in {c["id"] for c in db.list_categories()}
+    db.close()
+
+
+def test_delete_category_blocked_when_a_recurring_item_references_it(tmp_path):
+    db = _db(tmp_path)
+    db.add_category("Rent", "need", 800)
+    cat_id = next(c["id"] for c in db.list_categories() if c["name"] == "Rent")
+    db.add_recurring("Rent", "Landlord", cat_id, -800.0, "GBP", "monthly", "2026-09-01")
+
+    with pytest.raises(ValueError, match="recurring"):
+        db.delete_category(cat_id)
+    db.close()
+
+
+def test_delete_category_blocked_when_a_split_references_it(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_category("Groceries", "need", 200)
+    db.add_category("Household", "want", 100)
+    groceries_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries")
+    household_id = next(c["id"] for c in db.list_categories() if c["name"] == "Household")
+    db.add_transaction("2026-08-10", "Tesco", groceries_id, -50.0, "GBP", account_id=acc_id)
+    tx_id = db.list_transactions()[0]["id"]
+    db.set_transaction_splits(tx_id, [
+        {"category_id": groceries_id, "amount": -30.0, "note": ""},
+        {"category_id": household_id, "amount": -20.0, "note": ""},
+    ])
+
+    with pytest.raises(ValueError, match="split"):
+        db.delete_category(household_id)
     db.close()

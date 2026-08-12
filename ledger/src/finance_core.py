@@ -176,6 +176,12 @@ class Database:
             FOREIGN KEY(account_id) REFERENCES accounts(id)
         );
 
+        CREATE TABLE IF NOT EXISTS ignored_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            payee TEXT NOT NULL,
+            dismissed_date TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS roundups (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             transaction_id INTEGER,
@@ -547,6 +553,31 @@ class Database:
             if monthly_budget is not None:
                 self.conn.execute("UPDATE categories SET monthly_budget=? WHERE id=?",
                                    (monthly_budget, category_id))
+
+    def delete_category(self, category_id):
+        tx_count = self.conn.execute(
+            "SELECT COUNT(*) FROM transactions WHERE category_id=?", (category_id,)
+        ).fetchone()[0]
+        split_count = self.conn.execute(
+            "SELECT COUNT(*) FROM transaction_splits WHERE category_id=?", (category_id,)
+        ).fetchone()[0]
+        rec_count = self.conn.execute(
+            "SELECT COUNT(*) FROM recurring WHERE category_id=?", (category_id,)
+        ).fetchone()[0]
+        if tx_count or split_count or rec_count:
+            parts = []
+            if tx_count:
+                parts.append(f"{tx_count} transaction(s)")
+            if split_count:
+                parts.append(f"{split_count} transaction split(s)")
+            if rec_count:
+                parts.append(f"{rec_count} recurring item(s)")
+            raise ValueError(
+                "Cannot delete category — still used by " + ", ".join(parts) +
+                ". Recategorize them first."
+            )
+        with self.conn:
+            self.conn.execute("DELETE FROM categories WHERE id=?", (category_id,))
 
     # ---- transactions ----
     def add_transaction(self, date, payee, category_id, amount, currency, note="", account_id=None):
@@ -1418,6 +1449,30 @@ class Database:
         self.conn.execute("DELETE FROM recurring WHERE id=?", (recurring_id,))
         self.conn.commit()
 
+    def add_ignored_subscription(self, payee, date=None):
+        date = date or datetime.date.today().isoformat()
+        existing = self.conn.execute(
+            "SELECT id FROM ignored_subscriptions WHERE LOWER(payee)=LOWER(?)", (payee,)
+        ).fetchone()
+        if existing:
+            return
+        self.conn.execute(
+            "INSERT INTO ignored_subscriptions(payee, dismissed_date) VALUES (?, ?)",
+            (payee, date),
+        )
+        self.conn.commit()
+
+    def remove_ignored_subscription(self, payee):
+        self.conn.execute(
+            "DELETE FROM ignored_subscriptions WHERE LOWER(payee)=LOWER(?)", (payee,)
+        )
+        self.conn.commit()
+
+    def list_ignored_subscriptions(self):
+        return self.conn.execute(
+            "SELECT * FROM ignored_subscriptions ORDER BY dismissed_date DESC"
+        ).fetchall()
+
     def _advance_date(self, date_str, frequency):
         d = datetime.date.fromisoformat(date_str)
         if frequency == "weekly":
@@ -1725,6 +1780,7 @@ def detect_recurring_candidates(db: Database, min_occurrences=3, interval_tolera
     already have an active recurring entry (case-insensitive match), so
     it only surfaces genuinely undetected subscriptions."""
     known_payees = {r["payee"].strip().lower() for r in db.list_recurring(active_only=True) if r["payee"]}
+    ignored_payees = {r["payee"].strip().lower() for r in db.list_ignored_subscriptions()}
 
     by_payee = {}
     for t in db.conn.execute(
@@ -1735,7 +1791,7 @@ def detect_recurring_candidates(db: Database, min_occurrences=3, interval_tolera
 
     candidates = []
     for payee_key, txs in by_payee.items():
-        if payee_key in known_payees or len(txs) < min_occurrences:
+        if payee_key in known_payees or payee_key in ignored_payees or len(txs) < min_occurrences:
             continue
         dates = [datetime.date.fromisoformat(t["date"]) for t in txs]
         intervals = [(dates[i + 1] - dates[i]).days for i in range(len(dates) - 1)]
@@ -1795,6 +1851,21 @@ def spend_by_kind(db: Database, year, month):
         if kind in totals:
             totals[kind] += amount
     return totals
+
+
+def income_by_category(db: Database, year, month):
+    """This month's income total per income-kind category, in reporting
+    currency — feeds the Budgets tab's Income card. Labeling only, no
+    budget/target framing: 'over budget' doesn't apply to income."""
+    totals = {}
+    for t in db.transactions_in_month(year, month):
+        if t["amount"] <= 0 or t["category_kind"] != "income":
+            continue
+        entry = totals.setdefault(t["category_id"], {
+            "category_id": t["category_id"], "category_name": t["category_name"], "total": 0.0,
+        })
+        entry["total"] += db.to_reporting(t["amount"], t["currency"])
+    return sorted(totals.values(), key=lambda r: -r["total"])
 
 
 def upcoming_bills(db: Database, within_days=14, today: Optional[datetime.date] = None):
