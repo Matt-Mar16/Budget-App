@@ -34,8 +34,14 @@ def _build_categories_sheet(wb):
     ws.append(["Category", "Currency", "Monthly budget", "Label"])
     row_num = 2
     for category, currency, budget in CATEGORIES:
+        # "Label" is a formula (e.g. =A2&" ("&B2&")") so it stays in sync if
+        # the category/currency cells are ever hand-edited in Excel; this is
+        # the column the Transactions sheet's Category dropdown reads from.
         ws.append([category, currency, budget, f'=A{row_num}&" ("&B{row_num}&")"'])
         row_num += 1
+    # Currency Exchange has no currency of its own, so it gets a literal
+    # string here instead of the formula above — the formula would otherwise
+    # render as "Currency Exchange ()" with the Currency cell left blank.
     ws.append([CURRENCY_EXCHANGE_CATEGORY, None, None, CURRENCY_EXCHANGE_CATEGORY])
     return ws
 
@@ -43,6 +49,11 @@ def _build_categories_sheet(wb):
 def _build_transactions_sheet(wb):
     ws = wb.create_sheet("Transactions")
     ws.append(["Date", "Account", "Category", "Description", "Amount", "Currency", "Exchange Rate"])
+    # This example row must stay: Excel's table "calculated column" auto-fill
+    # only propagates the Currency formula to new rows the user adds once at
+    # least one existing row already carries it. Column order in this literal
+    # list is Date, Account, Category, Description, Amount, Currency, Exchange
+    # Rate — the Currency cell (index 5) is the XLOOKUP formula itself.
     ws.append([
         "2026-09-01",
         ACCOUNTS[0][0],
@@ -53,6 +64,9 @@ def _build_transactions_sheet(wb):
         None,
     ])
 
+    # Dropdown validation ranges are pre-extended a fixed number of rows below
+    # the header so a user typing new rows keeps getting the Account/Category
+    # dropdowns without needing to re-run this script.
     last_row = 1 + VALIDATION_ROWS
     table = Table(displayName="TransactionsTable", ref=f"A1:G{max(2, ws.max_row)}")
     table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)

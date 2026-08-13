@@ -6,6 +6,9 @@ LOG_COLUMNS = ["Date", "Account", "Category", "Description", "Amount", "Currency
 
 
 def parse_label(label):
+    # Splits a Categories-sheet dropdown value like "Groceries (CAD)" back into
+    # its category and currency parts. rpartition on " (" (not a plain split)
+    # so a category name that itself contains "(" still splits at the last one.
     if label.endswith(")") and " (" in label:
         category, _, currency = label.rpartition(" (")
         return category, currency[:-1]
@@ -14,6 +17,8 @@ def parse_label(label):
 
 def load_transactions_log(path):
     if not Path(path).exists():
+        # No log yet (nothing synced): return an empty, correctly-typed frame
+        # rather than raising, so callers (analyze.py) don't need a special case.
         df = pd.DataFrame(columns=LOG_COLUMNS)
         df["Date"] = pd.to_datetime(df["Date"])
         df["category"] = df["Category"]
@@ -21,6 +26,8 @@ def load_transactions_log(path):
 
     df = pd.read_csv(path, parse_dates=["Date"])
     df["Date"] = pd.to_datetime(df["Date"])
+    # The log's "Category" column stores the raw dropdown label ("Groceries
+    # (CAD)"); "category" is the bare category name used for grouping/lookups.
     df["category"] = df["Category"].apply(lambda label: parse_label(label)[0])
     return df
 
@@ -35,6 +42,8 @@ def budget_vs_actual(transactions_df, categories_df, currency, month):
     in_month = in_currency[
         (in_currency["Date"].dt.year == year) & (in_currency["Date"].dt.month == month_num)
     ]
+    # Expenses are stored as negative amounts; flip the sign so "actual" spend
+    # comes out positive and comparable to the (positive) budget figure.
     spend_by_category = in_month.groupby("category")["Amount"].sum().mul(-1)
 
     result = budgeted.rename(columns={"Category": "category", "Monthly budget": "budget"}).copy()
@@ -59,6 +68,10 @@ def account_running_balance(transactions_df, accounts_df, account_name, as_of=No
 
 
 def effective_exchange_rate(transactions_df):
+    # Deliberately aggregates each currency's leg of every exchange
+    # independently (total CAD received / total GBP sent) rather than pairing
+    # up individual rows — there's no reliable way to match one GBP row to
+    # "its" CAD row, so this gives a blended rate across all exchanges instead.
     exchanges = transactions_df[transactions_df["category"] == "Currency Exchange"]
     cad_received = exchanges.loc[exchanges["Currency"] == "CAD", "Amount"].sum()
     gbp_sent = exchanges.loc[exchanges["Currency"] == "GBP", "Amount"].sum()
@@ -84,9 +97,14 @@ def sankey_flows(transactions_df):
     cad_received = exchanges.loc[exchanges["Currency"] == "CAD", "Amount"].sum()
     cad_spend = spend_by_category("CAD")
 
+    # What's left over once GBP income has covered GBP spend and whatever was
+    # exchanged into CAD; same idea for CAD once it's covered CAD spend.
     unspent_gbp = gbp_income - gbp_spend.sum() - gbp_exchanged
     unspent_cad = cad_received - cad_spend.sum()
 
+    # Builds the Sankey node list and link list together: nodes are added
+    # lazily (only once a link actually needs them) and referenced by index,
+    # which is what plotly's Sankey trace expects for source/target.
     nodes = ["Income (GBP)"]
 
     def node_index(label):
@@ -97,6 +115,9 @@ def sankey_flows(transactions_df):
     income_idx = 0
     links = []
 
+    # Money flows: GBP income -> each GBP spend category, -> the currency
+    # exchange, and -> whatever's unspent; then CAD received from the
+    # exchange -> each CAD spend category, -> whatever's unspent in CAD.
     for category, amount in gbp_spend.items():
         if amount == 0:
             continue

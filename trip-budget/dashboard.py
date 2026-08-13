@@ -7,6 +7,8 @@ from sync_transactions import sync
 
 
 def run_dashboard(excel_path, log_path, charts_dir, backups_dir, now=None, month=None):
+    # Sync must run first so the report below reads the log with this
+    # session's phone-entered rows already appended (and the sheet cleared).
     sync(excel_path, log_path, backups_dir, now=now)
 
     accounts_df, categories_df = analyze.load_reference_data(excel_path)

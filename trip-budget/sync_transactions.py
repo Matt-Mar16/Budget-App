@@ -12,6 +12,9 @@ COLUMNS = ["Date", "Account", "Category", "Description", "Amount", "Currency", "
 
 def _read_data_rows(ws):
     rows = []
+    # min_row=2 skips the header row. Blank rows (e.g. left over inside the
+    # table's validation range but never filled in) are skipped rather than
+    # turned into empty transaction records.
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row, values_only=True):
         if all(value is None for value in row):
             continue
@@ -22,6 +25,9 @@ def _read_data_rows(ws):
 def _clear_data_rows(ws):
     if ws.max_row > 1:
         ws.delete_rows(2, ws.max_row - 1)
+    # The Excel table's own ref range has to be shrunk back down to just the
+    # header row too, or the table (and its dropdown validations) would still
+    # claim to span rows that no longer exist.
     if TRANSACTIONS_TABLE in ws.tables:
         last_col = chr(ord("A") + len(COLUMNS) - 1)
         ws.tables[TRANSACTIONS_TABLE].ref = f"A1:{last_col}1"
@@ -39,6 +45,10 @@ def sync(excel_path, log_path, backups_dir, now=None):
 
     pushed_df = pd.DataFrame(rows, columns=COLUMNS)
 
+    # Backup is written before anything is cleared or appended to the log, and
+    # deliberately has no dedup against previous syncs — this is the recovery
+    # copy if a sync is interrupted partway, so it must reflect exactly what
+    # was read off the sheet this run, independent of what happens next.
     backups_dir = Path(backups_dir)
     backups_dir.mkdir(parents=True, exist_ok=True)
     backup_path = backups_dir / f"pushed_{now.strftime('%Y-%m-%d_%H%M%S')}.csv"
@@ -47,6 +57,8 @@ def sync(excel_path, log_path, backups_dir, now=None):
     log_path = Path(log_path)
     log_df = pushed_df.copy()
     log_df["synced_at"] = now.isoformat()
+    # Appends to the permanent log (header only written the first time it's
+    # created); the sheet itself is only cleared after this append succeeds.
     log_df.to_csv(log_path, mode="a", index=False, header=not log_path.exists())
 
     _clear_data_rows(ws)

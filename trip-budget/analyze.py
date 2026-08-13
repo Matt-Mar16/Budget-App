@@ -55,6 +55,8 @@ def draw_bar_charts(report, output_dir):
 
     for currency, df in report["budget_vs_actual"].items():
         fig, ax = plt.subplots()
+        # Budget and Actual bars are offset left/right of each category's
+        # integer tick position so they sit side by side instead of overlapping.
         positions = range(len(df))
         ax.bar([p - 0.2 for p in positions], df["budget"], width=0.4, label="Budget")
         ax.bar([p + 0.2 for p in positions], df["actual"], width=0.4, label="Actual")
