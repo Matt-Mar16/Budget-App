@@ -65,6 +65,12 @@ APP_TITLE = "The Ledger"
 CURRENCY_SYMBOLS = {"GBP": "£", "USD": "$", "EUR": "€", "JPY": "¥", "AUD": "A$",
                      "CAD": "C$", "CHF": "CHF", "NZD": "NZ$", "INR": "₹"}
 
+# Cycled through for per-category donut segments, where the theme's small
+# set of semantic colors (accent/good/warn/bad) isn't enough for an
+# arbitrary number of categories.
+CATEGORY_CHART_COLORS = ["#5B8DEF", "#4CC9A0", "#F2994A", "#E4574C", "#9B6BDE",
+                          "#4AB8C4", "#E0A93E", "#6E7FE0", "#D46FB0", "#67B356"]
+
 
 def fmt_money(x, currency="GBP"):
     try:
@@ -1662,6 +1668,23 @@ class BudgetsTab(ScrollableTab):
         ttk.Button(add_frame, text="Add Category", style="Accent.TButton",
                    command=self.add_category).grid(row=0, column=3, padx=8)
 
+        c = self.app.c
+        donuts_card = Card(self, title="Actual vs. Budgeted — This Period")
+        donuts_card.pack(fill="x", pady=(0, 8))
+        donuts_row = ttk.Frame(donuts_card, style="Card.TFrame")
+        donuts_row.pack(fill="both", expand=True)
+        actual_col = ttk.Frame(donuts_row, style="Card.TFrame")
+        actual_col.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        ttk.Label(actual_col, text="Actual spend by category", style="CardDim.TLabel").pack(anchor="w")
+        self.actual_donut_canvas = tk.Canvas(actual_col, height=200, highlightthickness=0, bg=c["card"])
+        self.actual_donut_canvas.pack(fill="both", expand=True)
+        budgeted_col = ttk.Frame(donuts_row, style="Card.TFrame")
+        budgeted_col.pack(side="left", fill="both", expand=True, padx=(5, 0))
+        ttk.Label(budgeted_col, text="Budgeted allocation by category", style="CardDim.TLabel").pack(
+            anchor="w")
+        self.budgeted_donut_canvas = tk.Canvas(budgeted_col, height=200, highlightthickness=0, bg=c["card"])
+        self.budgeted_donut_canvas.pack(fill="both", expand=True)
+
         self.canvas_frame = ttk.Frame(self)
         self.canvas_frame.pack(fill="both", expand=True)
 
@@ -1703,6 +1726,23 @@ class BudgetsTab(ScrollableTab):
         for cat in db.list_categories():
             groups[cat["kind"]].append(cat)
         income_totals = {r["category_id"]: r["total"] for r in income_by_category(db, y, m)}
+
+        spend_categories = [cat for kind in ("need", "want", "saving") for cat in groups[kind]]
+        actual_segments = [
+            (cat["name"], spend_by_cat.get(cat["id"], 0.0), CATEGORY_CHART_COLORS[i % len(CATEGORY_CHART_COLORS)])
+            for i, cat in enumerate(spend_categories) if spend_by_cat.get(cat["id"], 0.0) > 0
+        ]
+        budgeted_segments = [
+            (cat["name"], cat["monthly_budget"] or 0.0,
+             CATEGORY_CHART_COLORS[i % len(CATEGORY_CHART_COLORS)])
+            for i, cat in enumerate(spend_categories) if (cat["monthly_budget"] or 0.0) > 0
+        ]
+        total_actual = sum(v for _, v, _ in actual_segments)
+        total_budgeted = sum(v for _, v, _ in budgeted_segments)
+        charts.draw_donut_chart(self.actual_donut_canvas, actual_segments, c,
+                                 center_label=fmt_money(total_actual, cur), center_sub="actual")
+        charts.draw_donut_chart(self.budgeted_donut_canvas, budgeted_segments, c,
+                                 center_label=fmt_money(total_budgeted, cur), center_sub="budgeted")
 
         titles = {"need": "Needs (50%)", "want": "Wants (30%)", "saving": "Savings/Debt (20%)"}
         col = 0
