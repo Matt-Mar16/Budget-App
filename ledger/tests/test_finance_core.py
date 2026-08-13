@@ -156,7 +156,18 @@ def test_generate_due_recurring_advances_a_custom_frequency_item_by_n_months(tmp
     assert len(posted) == 1
     item = db.list_recurring()[0]
     assert item["next_date"] == "2026-05-01"  # 3x/year cadence: Jan -> May -> Sep
+    # custom_interval_months must survive the roll-forward unchanged -- only next_date
+    # moves -- or the NEXT posting cycle would silently stop advancing by 4 months.
+    assert item["custom_interval_months"] == 4
     assert db.get_account(acc_id)["balance"] == pytest.approx(1500.0)
+
+    # Second cycle: confirm it advances by the SAME N months again, not just once.
+    posted2 = db.generate_due_recurring(today=datetime.date(2026, 5, 5))
+    assert len(posted2) == 1
+    item2 = db.list_recurring()[0]
+    assert item2["next_date"] == "2026-09-01"
+    assert item2["custom_interval_months"] == 4
+    assert db.get_account(acc_id)["balance"] == pytest.approx(1000.0)
     db.close()
 
 

@@ -1787,7 +1787,7 @@ class RecurringTab(ScrollableTab):
         ttk.Entry(self.custom_interval_frame, textvariable=self.custom_interval_var, width=6).pack(
             side="left", padx=6)
         self.custom_interval_frame.grid_remove()
-        freq_combo.bind("<<ComboboxSelected>>", lambda e: self._update_custom_interval_visibility())
+        self.freq_var.trace_add("write", lambda *a: self._update_custom_interval_visibility())
 
         list_card = Card(self, title="All Recurring Items")
         list_card.pack(fill="both", expand=True, pady=(0, 10))
