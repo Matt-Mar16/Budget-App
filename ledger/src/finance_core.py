@@ -2,9 +2,9 @@
 finance_core.py
 Data layer + financial math for "The Complete Ledger" budgeting app.
 
-Everything here is deliberately simple arithmetic (means, ratios, sums) —
-per Part X of the research, no fake ML / GARCH / VaR machinery. Just the
-handful of mechanisms that actually repeat across the literature.
+Everything here is deliberately simple arithmetic (means, ratios, sums),
+not machine learning or statistical modeling — a personal budgeting app
+doesn't need it, and simple arithmetic is easy to verify by hand.
 """
 
 import sqlite3
@@ -716,12 +716,6 @@ class Database:
             apply_cashback_roundup=False, is_transfer=True,
         )
 
-    def _require_unreconciled(self, tx_id):
-        row = self.conn.execute("SELECT reconciled FROM transactions WHERE id=?", (tx_id,)).fetchone()
-        if row and row["reconciled"]:
-            raise ReconciledTransactionError(
-                f"Transaction {tx_id} is reconciled/locked — unreconcile it before editing or deleting.")
-
     def reconcile_transaction(self, tx_id):
         with self.conn:
             self.conn.execute(
@@ -757,10 +751,6 @@ class Database:
             new_balance = acc["balance"] + native_amount
         self.conn.execute("UPDATE accounts SET balance=? WHERE id=?", (new_balance, acc["id"]))
 
-    def _apply_balance_effect(self, acc, amount, currency):
-        with self.conn:
-            self._apply_balance_effect_nocommit(acc, amount, currency)
-
     def _apply_roundup_nocommit(self, tx_id, date, amount):
         """Rounds an expense up to the nearest configured unit and sweeps the
         difference (times the multiplier) into the Round-Up Jar account —
@@ -784,10 +774,6 @@ class Database:
             (tx_id, date, base, roundup),
         )
         return roundup
-
-    def _apply_roundup(self, tx_id, date, amount):
-        with self.conn:
-            return self._apply_roundup_nocommit(tx_id, date, amount)
 
     def list_roundups(self):
         return self.conn.execute("SELECT * FROM roundups ORDER BY date").fetchall()
@@ -1699,7 +1685,7 @@ class Database:
 
 
 # --------------------------------------------------------------------------
-# Financial math (Part II, III, VIII, X of the research)
+# Financial math — read-only aggregation over a Database, not methods on it
 # --------------------------------------------------------------------------
 
 def net_worth(db: Database):
@@ -1900,7 +1886,7 @@ def housing_ratio(db: Database, year, month):
 
 def safe_to_spend(db: Database, year, month, today: Optional[datetime.date] = None):
     """
-    Money-left / days-left "runway" number — Part XII, feature #1.
+    Money-left / days-left "runway" number for the Dashboard's hero figure.
     Safe-to-spend = (income so far - essential/committed spend so far - remaining category budgets already earmarked) / days left in month
     Simplified: available discretionary balance / days remaining in the
     reporting period (respects month_start_day via month_bounds() — "today"
@@ -2133,14 +2119,17 @@ def export_transactions_csv(db: Database, path, currency_converter=None):
 
 
 def fi_number(db: Database, annual_expenses):
-    """Financial Independence number = 25x annual expenses (Part VIII, 4% rule)."""
+    """Financial Independence number = 25x annual expenses (the "4% rule":
+    a portfolio of 25x annual spend is assumed to sustain ~4%/year withdrawal
+    indefinitely)."""
     return annual_expenses * 25
 
 
 def category_anomalies(db: Database, months_history=6, z_threshold=2.0):
     """
-    Simple statistical anomaly flags (Part X): a transaction well outside its
-    category's own rolling average — plain arithmetic, no trained model.
+    Flags a transaction that's unusually large for its own category, using a
+    plain z-score (how many standard deviations above that category's own
+    average) rather than any trained model.
     Returns list of (transaction row, category avg, category stdev).
     """
     all_tx = db.conn.execute(
@@ -2156,9 +2145,9 @@ def category_anomalies(db: Database, months_history=6, z_threshold=2.0):
     for cat, txs in by_cat.items():
         amounts = [-db.to_reporting(t["amount"], t["currency"]) for t in txs]
         if len(amounts) < 4:
-            continue
+            continue  # a stdev from 1-3 points is too noisy to flag anything meaningfully
         avg = mean(amounts)
-        sd = pstdev(amounts) or 1e-9
+        sd = pstdev(amounts) or 1e-9  # avoid a divide-by-zero if every past amount was identical
         for t, amt in zip(txs, amounts):
             z = (amt - avg) / sd
             if z >= z_threshold:
@@ -2169,8 +2158,9 @@ def category_anomalies(db: Database, months_history=6, z_threshold=2.0):
 
 def lifestyle_inflation_flags(db: Database, year, month):
     """
-    Month-over-month category spend growth vs. income growth (Part XII, feature #7).
-    Compares given month to the prior month.
+    Flags categories whose spend grew notably faster than income did,
+    month-over-month — a lifestyle-inflation early warning. Compares the
+    given month to the one immediately before it.
     """
     prev_month, prev_year = (month - 1, year) if month > 1 else (12, year - 1)
     income_now, _, _ = monthly_totals(db, year, month)
@@ -2217,7 +2207,7 @@ def idle_cash_nudge(db: Database, year, month, buffer_months=3):
 
 
 # --------------------------------------------------------------------------
-# Debt payoff planner: snowball vs avalanche (Part III)
+# Debt payoff planner: snowball vs avalanche
 # --------------------------------------------------------------------------
 
 @dataclass
@@ -2316,7 +2306,7 @@ def life_energy_hours(amount, hourly_wage):
 
 
 # --------------------------------------------------------------------------
-# CSV import: validate/preview before committing (Part XII feature request)
+# CSV import: validate/preview before committing
 # --------------------------------------------------------------------------
 
 def csv_import_preview(db: Database, path, has_header=True,
@@ -2965,7 +2955,7 @@ def apply_profile_csvs(db: Database, profile_dir, db_path):
 
 
 # --------------------------------------------------------------------------
-# Need/Want/Saving budget category enforcement (Part XII feature #6)
+# Need/Want/Saving budget category enforcement
 # --------------------------------------------------------------------------
 
 def _category_spend_entries(db: Database, year, month):
