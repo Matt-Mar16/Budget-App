@@ -2483,7 +2483,7 @@ class AccountsTab(ScrollableTab):
         win = tk.Toplevel(self)
         win.title("Edit Account")
         win.configure(bg=self.app.c["bg"])
-        win.geometry("380x360")
+        win.geometry("380x620")
 
         ttk.Label(win, text="Name", style="TLabel").pack(anchor="w", padx=14, pady=(14, 2))
         name_var = tk.StringVar(value=acc["name"])
@@ -2505,11 +2505,43 @@ class AccountsTab(ScrollableTab):
         liquid_var = tk.BooleanVar(value=bool(acc["liquid"]))
         ttk.Checkbutton(win, text="Liquid", variable=liquid_var).pack(anchor="w", padx=14, pady=(10, 0))
 
-        credit_limit_var = None
+        credit_limit_var = cashback_rate_var = cashback_cap_var = due_day_var = None
+        expected_return_var = monthly_contribution_var = volatility_var = None
+
         if acc["subtype"] == "credit_card":
             ttk.Label(win, text="Credit limit", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
             credit_limit_var = tk.StringVar(value=str(acc["credit_limit"] or 0))
             ttk.Entry(win, textvariable=credit_limit_var).pack(fill="x", padx=14)
+
+            ttk.Label(win, text="Cashback % on spend", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+            cashback_rate_var = tk.StringVar(value=str(acc["cashback_rate"] or 0))
+            ttk.Entry(win, textvariable=cashback_rate_var).pack(fill="x", padx=14)
+
+            ttk.Label(win, text="Monthly cashback cap (0 = no cap)", style="TLabel").pack(
+                anchor="w", padx=14, pady=(10, 2))
+            cashback_cap_var = tk.StringVar(value=str(acc["cashback_monthly_cap"] or 0))
+            ttk.Entry(win, textvariable=cashback_cap_var).pack(fill="x", padx=14)
+
+            ttk.Label(win, text="Payment due day (1-28)", style="TLabel").pack(
+                anchor="w", padx=14, pady=(10, 2))
+            due_day_var = tk.StringVar(value=str(acc["due_day"] or ""))
+            ttk.Entry(win, textvariable=due_day_var).pack(fill="x", padx=14)
+
+        if acc["subtype"] == "investment":
+            ttk.Label(win, text="Expected annual return %", style="TLabel").pack(
+                anchor="w", padx=14, pady=(10, 2))
+            expected_return_var = tk.StringVar(value=str(acc["expected_return_pct"] or 0))
+            ttk.Entry(win, textvariable=expected_return_var).pack(fill="x", padx=14)
+
+            ttk.Label(win, text="Planned monthly contribution", style="TLabel").pack(
+                anchor="w", padx=14, pady=(10, 2))
+            monthly_contribution_var = tk.StringVar(value=str(acc["monthly_contribution"] or 0))
+            ttk.Entry(win, textvariable=monthly_contribution_var).pack(fill="x", padx=14)
+
+            ttk.Label(win, text="Return volatility % (for the projection range)", style="TLabel").pack(
+                anchor="w", padx=14, pady=(10, 2))
+            volatility_var = tk.StringVar(value=str(acc["return_volatility_pct"] or 0))
+            ttk.Entry(win, textvariable=volatility_var).pack(fill="x", padx=14)
 
         def do_save():
             name = name_var.get().strip()
@@ -2525,12 +2557,48 @@ class AccountsTab(ScrollableTab):
             self.app.db.update_account_core(account_id, name=name, currency=currency,
                                              liquid=liquid_var.get())
             self.app.db.update_account_balance(account_id, balance)
+
+            details = {}
             if credit_limit_var is not None:
                 try:
-                    self.app.db.update_account_details(
-                        account_id, credit_limit=float(credit_limit_var.get()))
+                    details["credit_limit"] = float(credit_limit_var.get())
                 except ValueError:
                     pass
+            if cashback_rate_var is not None:
+                try:
+                    details["cashback_rate"] = float(cashback_rate_var.get())
+                except ValueError:
+                    pass
+            if cashback_cap_var is not None:
+                try:
+                    details["cashback_monthly_cap"] = float(cashback_cap_var.get())
+                except ValueError:
+                    pass
+            if due_day_var is not None:
+                raw = due_day_var.get().strip()
+                if raw:
+                    try:
+                        details["due_day"] = min(max(int(raw), 1), 28)
+                    except ValueError:
+                        pass
+            if expected_return_var is not None:
+                try:
+                    details["expected_return_pct"] = float(expected_return_var.get())
+                except ValueError:
+                    pass
+            if monthly_contribution_var is not None:
+                try:
+                    details["monthly_contribution"] = float(monthly_contribution_var.get())
+                except ValueError:
+                    pass
+            if volatility_var is not None:
+                try:
+                    details["return_volatility_pct"] = float(volatility_var.get())
+                except ValueError:
+                    pass
+            if details:
+                self.app.db.update_account_details(account_id, **details)
+
             win.destroy()
             self.app.refresh_all()
 
