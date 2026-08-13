@@ -1814,15 +1814,20 @@ def safe_to_spend(db: Database, year, month, today: Optional[datetime.date] = No
     """
     Money-left / days-left "runway" number — Part XII, feature #1.
     Safe-to-spend = (income so far - essential/committed spend so far - remaining category budgets already earmarked) / days left in month
-    Simplified: available discretionary balance / days remaining in the month.
+    Simplified: available discretionary balance / days remaining in the
+    reporting period (respects month_start_day via month_bounds() — "today"
+    may fall in a different literal calendar month than the period's label
+    while still being chronologically inside it).
     """
     if today is None:
         today = datetime.date.today()
     income, expenses, _ = monthly_totals(db, year, month)
     # Remaining budget across "want" categories not yet spent, plus leftover income
     remaining_balance = income - expenses
-    last_day = _last_day_of_month(year, month)
-    days_left = max((last_day - today).days + 1, 1) if today.year == year and today.month == month else 1
+    start_str, end_str = month_bounds(db, year, month)
+    start_date = datetime.date.fromisoformat(start_str)
+    end_date = datetime.date.fromisoformat(end_str)
+    days_left = max((end_date - today).days + 1, 1) if start_date <= today <= end_date else 1
     return remaining_balance / days_left, remaining_balance, days_left
 
 
@@ -1832,8 +1837,19 @@ def _last_day_of_month(year, month):
     return datetime.date(year, month + 1, 1) - datetime.timedelta(days=1)
 
 
+def _month_start_day(db):
+    """The configured month_start_day setting, clamped to 1..28 (same
+    convention this codebase already uses for credit card due_day) —
+    chosen specifically so no day-of-month edge case can ever arise, since
+    every month has at least 28 days. Shared by month_bounds and
+    custom_month_for_date so they can never drift into disagreeing about
+    what the current start day actually is — they need to stay exact
+    inverses of each other."""
+    return min(max(db.get_setting_int("month_start_day", 1), 1), 28)
+
+
 def _clamped_month_start(db, year, month):
-    start_day = min(max(db.get_setting_int("month_start_day", 1), 1), 28)
+    start_day = _month_start_day(db)
     last_day = _last_day_of_month(year, month).day
     return datetime.date(year, month, min(start_day, last_day))
 
@@ -1843,7 +1859,7 @@ def month_bounds(db: Database, year, month):
     spans, given the month_start_day setting (default 1 = plain calendar
     month, byte-for-byte identical to date(year, month, 1)..last day of
     that month). A month is labeled by the calendar month it starts in:
-    with month_start_day=25, (year, 8) spans 25 Jul-24 Aug."""
+    with month_start_day=25, (year, 8) spans 25 Aug-24 Sep."""
     start_date = _clamped_month_start(db, year, month)
     next_month = month + 1
     next_year = year
@@ -1859,7 +1875,7 @@ def custom_month_for_date(db: Database, a_date):
     """Which reporting-month bucket (year, month) a real date falls into,
     given month_start_day. Used to resolve "today" into the right bucket
     when the app opens or "Today" is clicked."""
-    start_day = min(max(db.get_setting_int("month_start_day", 1), 1), 28)
+    start_day = _month_start_day(db)
     if a_date.day >= start_day:
         return a_date.year, a_date.month
     month = a_date.month - 1
@@ -1947,11 +1963,22 @@ def top_payees(db: Database, year, month, limit=10):
 
 def daily_spend_totals(db: Database, year, month):
     """Expense total per day-of-month (1..days_in_month, every day present,
-    0.0 where nothing was spent) — feeds a calendar-style spending heatmap.
-    Income is excluded, same convention as top_payees/category_budget_status."""
+    0.0 where nothing was spent) — feeds a calendar-style spending heatmap
+    (charts.draw_calendar_heatmap) that renders a literal weekday-aligned
+    grid for one specific real month. Deliberately always a plain calendar
+    month, independent of the month_start_day setting — a custom reporting
+    period spanning two calendar months has no sensible weekday-grid
+    rendering, so this queries transactions directly rather than through
+    Database.transactions_in_month (which IS custom-month-aware). Income
+    is excluded, same convention as top_payees/category_budget_status."""
     days_in_month = calendar.monthrange(year, month)[1]
     totals = {day: 0.0 for day in range(1, days_in_month + 1)}
-    for t in db.transactions_in_month(year, month):
+    prefix = f"{year:04d}-{month:02d}"
+    rows = db.conn.execute(
+        "SELECT date, amount, currency FROM transactions "
+        "WHERE date LIKE ? AND is_transfer = 0", (prefix + "%",),
+    ).fetchall()
+    for t in rows:
         if t["amount"] >= 0:
             continue
         day = int(t["date"][8:10])
@@ -2929,7 +2956,8 @@ def categories_over_threshold(db: Database, year, month, threshold_pct=None):
     return [row for row in category_budget_status(db, year, month) if row["pct"] >= threshold]
 
 
-def would_exceed_budget(db: Database, category_id, amount, currency=None, year=None, month=None):
+def would_exceed_budget(db: Database, category_id, amount, currency=None, year=None, month=None,
+                         today: Optional[datetime.date] = None):
     """Would logging this expense (amount, negative, in `currency`) push
     the category over its monthly_budget? Used to enforce Need/Want/Saving
     envelopes at entry time rather than only reporting after the fact.
@@ -2941,12 +2969,20 @@ def would_exceed_budget(db: Database, category_id, amount, currency=None, year=N
     the conversion entirely for any transaction logged in a different
     currency (e.g. a €500 expense would've been compared against a GBP
     budget as if it were £500). Always pass the currency the amount is
-    actually denominated in."""
+    actually denominated in.
+
+    year/month default to the reporting period "today" falls into (via
+    custom_month_for_date, which respects month_start_day) rather than
+    today's literal calendar year/month — "today" may be in a different
+    calendar month than the reporting period it's chronologically part
+    of."""
     if amount >= 0 or not category_id:
         return False, 0.0, 0.0
-    today = datetime.date.today()
-    year = year or today.year
-    month = month or today.month
+    today = today or datetime.date.today()
+    if year is None or month is None:
+        default_year, default_month = custom_month_for_date(db, today)
+        year = year or default_year
+        month = month or default_month
     currency = (currency or db.get_setting("reporting_currency", "GBP")).upper()
     cat = db.conn.execute("SELECT * FROM categories WHERE id=?", (category_id,)).fetchone()
     if not cat or not cat["monthly_budget"]:

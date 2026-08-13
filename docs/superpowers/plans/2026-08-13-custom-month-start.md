@@ -18,7 +18,7 @@
 - **`month_start_day == 1` (the default) must reproduce byte-for-byte identical behavior to the current codebase in every function this plan touches.** This is the safety property that makes the whole feature low-risk — verify it explicitly in tests, don't just assume it.
 - **Recurring bill due-dates and the UK tax year are explicitly out of scope** — `_advance_date`, `generate_due_recurring`, `upcoming_bills`, and `uk_tax_year_start` must not be touched by this plan.
 - **`daily_spend_totals` and `charts.draw_calendar_heatmap` are explicitly out of scope** — see spec's rationale (weekday-grid chart incompatible with a cross-calendar-month period). Do not modify either.
-- A month is labeled by the calendar month it starts in (e.g. `month_start_day=25`, `(year=2026, month=8)` spans 25 Jul–24 Aug 2026).
+- A month is labeled by the calendar month it starts in (e.g. `month_start_day=25`, `(year=2026, month=8)` spans 25 Aug–24 Sep 2026).
 
 ---
 
@@ -160,7 +160,7 @@ def month_bounds(db: Database, year, month):
     spans, given the month_start_day setting (default 1 = plain calendar
     month, byte-for-byte identical to date(year, month, 1)..last day of
     that month). A month is labeled by the calendar month it starts in:
-    with month_start_day=25, (year, 8) spans 25 Jul-24 Aug."""
+    with month_start_day=25, (year, 8) spans 25 Aug-24 Sep."""
     start_date = _clamped_month_start(db, year, month)
     next_month = month + 1
     next_year = year

@@ -34,7 +34,7 @@ what real calendar dates a reporting "month" spans:
 - When `month_start_day > 1`: `start_date = date(year, month, month_start_day)`,
   `end_date = date(year, month, month_start_day) + 1 calendar month - 1 day`.
   A month is **labeled by the calendar month it starts in** — "August" with
-  `month_start_day=25` spans 25 Jul–24 Aug. This matches the user's own
+  `month_start_day=25` spans 25 Aug–24 Sep. This matches the user's own
   framing ("I get paid on the 25th, so month should start on the 25th") —
   the month is named for when the money arrives, not when it's spent down.
 
@@ -127,10 +127,10 @@ means "the month that starts in calendar month `month`."
 - **`App._update_month_label()`**: when `month_start_day == 1`, keeps the
   existing simple `"%B %Y"` label (e.g. "August 2026") — zero visual
   change for anyone not using the feature. When `month_start_day > 1`,
-  shows the real date range instead (e.g. "25 Jul – 24 Aug 2026"), per the
-  user's own choice — unambiguous about what period is actually being
-  viewed, since "August 2026" would be actively misleading once the
-  period doesn't start August 1st.
+  shows the real date range instead (e.g. "25 Aug – 24 Sep 2026" for the
+  month labeled August), per the user's own choice — unambiguous about
+  what period is actually being viewed, since "August 2026" would be
+  actively misleading once the period doesn't start August 1st.
 - **`App.prev_month()` / `next_month()`**: unchanged — they already just
   decrement/increment the `(year, month)` index, which continues to work
   correctly since `month_bounds` handles the real-date translation.
@@ -140,8 +140,8 @@ means "the month that starts in calendar month `month`."
 Test-first against `finance_core.py`. Critical cases for `month_bounds`:
 default (`month_start_day=1`) reproduces exact current calendar-month
 bounds; a mid-month start day (e.g. 25) produces the correct 25th-to-24th
-range; year rollover (e.g. `month_start_day=25`, month=1 spans
-25 Dec (prior year)–24 Jan). `month_start_day` is itself clamped to
+range; year rollover (e.g. `month_start_day=25`, month=12 spans
+25 Dec–24 Jan of the following year). `month_start_day` is itself clamped to
 `1..28` before any date math runs — same convention this codebase already
 uses for credit card `due_day`, chosen specifically so no day-of-month
 edge case (a month shorter than the configured start day) can ever arise:

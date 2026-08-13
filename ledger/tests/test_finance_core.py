@@ -13,6 +13,7 @@ from finance_core import (
     export_categories_editable_csv, export_investments_editable_csv,
     apply_transactions_csv, apply_accounts_csv, apply_categories_csv, apply_investments_csv,
     refresh_profile_csvs, apply_profile_csvs, month_bounds, custom_month_for_date,
+    safe_to_spend, would_exceed_budget,
 )
 
 TX_CSV_FIELDS = ["id", "date", "payee", "category", "amount", "currency", "note", "account",
@@ -172,6 +173,28 @@ def test_custom_month_for_date_rolls_the_year_back_at_january(tmp_path):
     db.close()
 
 
+def test_month_bounds_and_custom_month_for_date_are_exact_inverses(tmp_path):
+    # The invariant _month_start_day() exists to protect: for any date,
+    # asking "which bucket is this in" and then "what range does that
+    # bucket span" must land back on a range that actually contains the
+    # original date. Swept across every day of a year plus a start-day
+    # sweep, not just one hand-picked example.
+    db = _db(tmp_path)
+    for start_day in (1, 5, 15, 25, 28):
+        db.set_setting("month_start_day", str(start_day))
+        d = datetime.date(2026, 1, 1)
+        while d.year == 2026:
+            year, month = custom_month_for_date(db, d)
+            start_str, end_str = month_bounds(db, year, month)
+            start_date = datetime.date.fromisoformat(start_str)
+            end_date = datetime.date.fromisoformat(end_str)
+            assert start_date <= d <= end_date, (
+                f"start_day={start_day}: {d} bucketed to ({year},{month})="
+                f"{start_str}..{end_str}, which doesn't contain it")
+            d += datetime.timedelta(days=1)
+    db.close()
+
+
 def test_transactions_in_month_default_behavior_is_unchanged(tmp_path):
     db = _db(tmp_path)
     db.add_account("Checking", "asset", 0.0, currency="GBP")
@@ -255,6 +278,116 @@ def test_budget_run_rate_clamps_days_elapsed_after_the_period_ends(tmp_path):
     row = next(r for r in result if r["category"]["id"] == cat_id)
     assert row["days_elapsed"] == 31  # clamped to the full period, not still counting up
     assert row["projected"] == pytest.approx(310.0)  # spend-so-far == full month's projection
+    db.close()
+
+
+def test_budget_run_rate_days_elapsed_is_zero_before_the_period_starts(tmp_path):
+    db = _db(tmp_path)
+    db.set_setting("month_start_day", "25")
+    db.add_category("Groceries Run Rate 5", "need", 300.0)
+    cat_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries Run Rate 5")
+
+    # "Today" is before this period (25 Jul-24 Aug, month=7) has even begun.
+    result = budget_run_rate(db, 2026, 7, today=datetime.date(2026, 7, 1))
+
+    row = next(r for r in result if r["category"]["id"] == cat_id)
+    assert row["days_elapsed"] == 0
+    assert row["projected"] == 0.0  # division-by-zero guard, not a crash
+    db.close()
+
+
+def test_budget_run_rate_days_elapsed_at_the_exact_period_boundaries(tmp_path):
+    db = _db(tmp_path)
+    db.set_setting("month_start_day", "25")
+    db.add_category("Groceries Run Rate 6", "need", 300.0)
+    cat_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries Run Rate 6")
+
+    # Exactly on the first day of the period (25 Jul-24 Aug, month=7).
+    on_start = budget_run_rate(db, 2026, 7, today=datetime.date(2026, 7, 25))
+    row_start = next(r for r in on_start if r["category"]["id"] == cat_id)
+    assert row_start["days_elapsed"] == 1
+
+    # Exactly on the last day of the period.
+    on_end = budget_run_rate(db, 2026, 7, today=datetime.date(2026, 8, 24))
+    row_end = next(r for r in on_end if r["category"]["id"] == cat_id)
+    assert row_end["days_elapsed"] == 31
+    db.close()
+
+
+def test_safe_to_spend_default_behavior_is_unchanged(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_transaction("2026-08-01", "Salary", None, 3100.0, "GBP", account_id=acc_id)
+    db.add_transaction("2026-08-05", "Rent", None, -800.0, "GBP", account_id=acc_id)
+
+    per_day, remaining, days_left = safe_to_spend(db, 2026, 8, today=datetime.date(2026, 8, 21))
+
+    assert remaining == pytest.approx(2300.0)
+    assert days_left == 11  # Aug 21 (inclusive) .. Aug 31 = 11 days
+    assert per_day == pytest.approx(2300.0 / 11)
+    db.close()
+
+
+def test_safe_to_spend_respects_a_custom_start_day(tmp_path):
+    db = _db(tmp_path)
+    db.set_setting("month_start_day", "25")
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_transaction("2026-08-25", "Salary", None, 2000.0, "GBP", account_id=acc_id)
+    db.add_transaction("2026-08-26", "Rent", None, -200.0, "GBP", account_id=acc_id)
+
+    # Reporting period (2026, 8) with month_start_day=25 spans 25 Aug-24 Sep.
+    # "Today" (Sep 10) is a DIFFERENT literal calendar month than the
+    # period's label, but is still chronologically inside the period --
+    # days_left must be computed against the period's real end date
+    # (24 Sep), not against literal-August's last day (which "today"
+    # wouldn't even match against the old same-calendar-month guard).
+    per_day, remaining, days_left = safe_to_spend(db, 2026, 8, today=datetime.date(2026, 9, 10))
+
+    assert remaining == pytest.approx(1800.0)
+    assert days_left == 15  # Sep 10 (inclusive) .. Sep 24 = 15 days
+    assert per_day == pytest.approx(1800.0 / 15)
+    db.close()
+
+
+def test_would_exceed_budget_default_behavior_is_unchanged(tmp_path):
+    db = _db(tmp_path)
+    db.add_category("Groceries WEB Default", "need", 300.0)
+    cat_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries WEB Default")
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_transaction("2026-08-10", "Tesco", cat_id, -200.0, "GBP", account_id=acc_id)
+
+    would_exceed, spent_after, budget = would_exceed_budget(
+        db, cat_id, -150.0, currency="GBP", today=datetime.date(2026, 8, 21))
+
+    assert would_exceed is True
+    assert spent_after == pytest.approx(350.0)
+    assert budget == pytest.approx(300.0)
+    db.close()
+
+
+def test_would_exceed_budget_default_year_month_respects_a_custom_start_day(tmp_path):
+    db = _db(tmp_path)
+    db.set_setting("month_start_day", "25")
+    db.add_category("Groceries WEB", "need", 300.0)
+    cat_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries WEB")
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    # 26 Aug falls in reporting period (2026, 8) = 25 Aug-24 Sep.
+    db.add_transaction("2026-08-26", "Tesco", cat_id, -200.0, "GBP", account_id=acc_id)
+
+    # "today" is Sep 10 -- literal calendar September, but still inside the
+    # SAME reporting period (25 Aug-24 Sep) as the £200 already spent. With
+    # no year/month supplied, this must resolve via the custom period
+    # (picking up the existing £200 and correctly firing the warning), not
+    # literal-September (which would see no prior spend and never fire it).
+    would_exceed, spent_after, budget = would_exceed_budget(
+        db, cat_id, -150.0, currency="GBP", today=datetime.date(2026, 9, 10))
+
+    assert would_exceed is True
+    assert spent_after == pytest.approx(350.0)
     db.close()
 
 
@@ -856,6 +989,33 @@ def test_daily_spend_totals_sums_expenses_per_day_of_month(tmp_path):
     assert result[2] == 0.0
     assert len(result) == 30  # September has 30 days, every day present
 
+    db.close()
+
+
+def test_daily_spend_totals_stays_a_plain_calendar_month_regardless_of_month_start_day(tmp_path):
+    # daily_spend_totals feeds a literal weekday-aligned calendar-grid chart
+    # (charts.draw_calendar_heatmap) for one specific real month -- it must
+    # NOT follow month_start_day, since a custom period spanning two
+    # calendar months has no sensible grid rendering. This must stay true
+    # even though the reporting month (2026, 8) with month_start_day=25
+    # extends into September (25 Aug-24 Sep): a 3 Sep transaction belongs
+    # to that reporting period but must NOT appear in daily_spend_totals(2026, 8),
+    # which should show only literal calendar August.
+    db = _db(tmp_path)
+    db.set_setting("month_start_day", "25")
+    db.add_transaction(date="2026-08-26", payee="In August", category_id=None,
+                        amount=-20.0, currency="GBP")
+    db.add_transaction(date="2026-09-03", payee="In the reporting period but not August",
+                        category_id=None, amount=-50.0, currency="GBP")
+
+    result = daily_spend_totals(db, 2026, 8)
+
+    assert result[26] == pytest.approx(20.0)
+    # The Sep 3rd transaction must not leak into August's day-3 cell just
+    # because both happen to be valid day numbers -- it belongs to a
+    # different real calendar month entirely.
+    assert result[3] == 0.0
+    assert len(result) == 31  # literal calendar August has 31 days, unaffected by month_start_day
     db.close()
 
 
