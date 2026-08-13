@@ -11,7 +11,11 @@ profile's data is stored locally in a "Profiles" folder next to this code —
 nothing leaves
 the machine.
 
-Feature list (mapped to Part XII of the original research, plus additions):
+Core feature set (the app has grown well beyond this original list since —
+see CLAUDE.md for the full, current picture, including everything added
+across later feature rounds: transfers, reconciliation, cashback rules,
+custom recurring schedules, a custom month-start day, the Accounts/Net
+Worth split, the Forecast tab, and more):
  1. Real-time "safe to spend" / runway number             -> Dashboard
  2. Monthly savings target as a fixed line item            -> Settings + Dashboard
  3. Multi-currency ledger with editable FX table            -> Transactions + Settings
@@ -24,14 +28,13 @@ Feature list (mapped to Part XII of the original research, plus additions):
 10. Idle-cash nudge                                         -> Dashboard
 11. Simple statistical anomaly flags                        -> Dashboard
 12. Life-energy (hours-of-work) view                        -> Transactions + Settings
-13. Light gamification (streaks/check-ins)                  -> Dashboard
-14. Low-friction "set once, check monthly" mode              -> whole app is check-in based
-15. Local-first storage (SQLite file per profile)            -> finance_core.Database
-16. Multiple user profiles, each fully isolated              -> profiles.py + launcher screen
-17. Recurring bills / paychecks, auto-posted on open         -> Recurring tab
-18. CSV export                                               -> Transactions tab
-19. Dark / light theme                                       -> Settings tab
-20. Trend & allocation charts (net worth, income vs. expense, envelope split)
+13. Low-friction "set once, check monthly" mode              -> whole app is check-in based
+14. Local-first storage (SQLite file per profile)            -> finance_core.Database
+15. Multiple user profiles, each fully isolated              -> profiles.py + launcher screen
+16. Recurring bills / paychecks, auto-posted on open         -> Recurring tab
+17. CSV export                                               -> Transactions tab
+18. Dark / light theme                                       -> Settings tab
+19. Trend & allocation charts (net worth, income vs. expense, envelope split)
 """
 
 import sys
@@ -584,6 +587,12 @@ class App(tk.Tk):
         self._build_nav_buttons()
 
     def show_page(self, key):
+        # Every tab is built once, up front, in _build_layout() -- switching
+        # pages never recreates widgets, it just raises the target tab above
+        # the others (tkraise()) and refreshes that one tab's data. Contrast
+        # with refresh_all() below, which refreshes every tab regardless of
+        # which is currently visible, so none of them show stale data the
+        # next time the user switches to it after an edit elsewhere.
         if key in get_hidden_nav_tabs(self.db):
             key = "dashboard"
         self.current_page = key
