@@ -1793,6 +1793,12 @@ class BudgetsTab(ScrollableTab):
                 ttk.Button(edit_row, text="Delete",
                            command=lambda cid=cat["id"], name=cat["name"]:
                                self._delete_category(cid, name)).pack(side="left", padx=4)
+                ttk.Button(edit_row, text="▲",
+                           command=lambda cid=cat["id"]: self._move_category(cid, "up")).pack(
+                    side="left", padx=(8, 0))
+                ttk.Button(edit_row, text="▼",
+                           command=lambda cid=cat["id"]: self._move_category(cid, "down")).pack(
+                    side="left", padx=2)
 
         income_frame = Card(self.canvas_frame, title="Income")
         income_frame.grid(row=0, column=col, sticky="nsew", padx=6)
@@ -1806,9 +1812,15 @@ class BudgetsTab(ScrollableTab):
             row.pack(fill="x", pady=5)
             ttk.Label(row, text=f"{cat['name']}: {fmt_money(total, cur)}",
                       style="Card.TLabel").pack(side="left")
+            ttk.Button(row, text="▼",
+                       command=lambda cid=cat["id"]: self._move_category(cid, "down")).pack(
+                side="right", padx=2)
+            ttk.Button(row, text="▲",
+                       command=lambda cid=cat["id"]: self._move_category(cid, "up")).pack(
+                side="right", padx=(4, 0))
             ttk.Button(row, text="Delete",
                        command=lambda cid=cat["id"], name=cat["name"]:
-                           self._delete_category(cid, name)).pack(side="right")
+                           self._delete_category(cid, name)).pack(side="right", padx=6)
 
     def _set_budget(self, cat_id, var):
         try:
@@ -1816,6 +1828,10 @@ class BudgetsTab(ScrollableTab):
         except ValueError:
             return
         self.app.db.set_category_budget(cat_id, val)
+        self.app.refresh_all()
+
+    def _move_category(self, cat_id, direction):
+        self.app.db.move_category(cat_id, direction)
         self.app.refresh_all()
 
     def _delete_category(self, cat_id, name):

@@ -2236,3 +2236,90 @@ def test_delete_category_blocked_when_a_split_references_it(tmp_path):
     with pytest.raises(ValueError, match="split"):
         db.delete_category(household_id)
     db.close()
+
+
+def test_add_category_assigns_increasing_sort_order(tmp_path):
+    db = _db(tmp_path)
+    before = max((c["sort_order"] or 0) for c in db.list_categories())
+    db.add_category("Zzz New Want", "want", 0)
+    added = next(c for c in db.list_categories() if c["name"] == "Zzz New Want")
+    assert added["sort_order"] == before + 1
+    db.close()
+
+
+def test_list_categories_orders_by_kind_then_sort_order_not_name(tmp_path):
+    db = _db(tmp_path)
+    db.add_category("Aaa Last Want", "want", 0)
+    db.add_category("Zzz First Want", "want", 0)
+    wants = [c["name"] for c in db.list_categories() if c["kind"] == "want"]
+    # Insertion order (Aaa added before Zzz), not alphabetical -- proves
+    # ordering is driven by sort_order, not name.
+    assert wants.index("Aaa Last Want") < wants.index("Zzz First Want")
+    db.close()
+
+
+def test_move_category_up_swaps_with_previous_same_kind_sibling(tmp_path):
+    db = _db(tmp_path)
+    db.add_category("Want A", "want", 0)
+    db.add_category("Want B", "want", 0)
+    wants_before = [c["name"] for c in db.list_categories() if c["kind"] == "want"]
+    b_id = next(c["id"] for c in db.list_categories() if c["name"] == "Want B")
+
+    db.move_category(b_id, "up")
+
+    wants_after = [c["name"] for c in db.list_categories() if c["kind"] == "want"]
+    idx_a, idx_b = wants_before.index("Want A"), wants_before.index("Want B")
+    assert idx_b == idx_a + 1, "test setup assumption: B started right after A"
+    assert wants_after.index("Want B") == wants_after.index("Want A") - 1
+    db.close()
+
+
+def test_move_category_down_swaps_with_next_same_kind_sibling(tmp_path):
+    db = _db(tmp_path)
+    db.add_category("Want C", "want", 0)
+    db.add_category("Want D", "want", 0)
+    c_id = next(c["id"] for c in db.list_categories() if c["name"] == "Want C")
+
+    db.move_category(c_id, "down")
+
+    wants_after = [c["name"] for c in db.list_categories() if c["kind"] == "want"]
+    assert wants_after.index("Want C") == wants_after.index("Want D") + 1
+    db.close()
+
+
+def test_move_category_up_at_top_of_its_kind_is_a_noop(tmp_path):
+    db = _db(tmp_path)
+    wants_before = [c["id"] for c in db.list_categories() if c["kind"] == "want"]
+    top_id = wants_before[0]
+
+    db.move_category(top_id, "up")
+
+    wants_after = [c["id"] for c in db.list_categories() if c["kind"] == "want"]
+    assert wants_after == wants_before
+    db.close()
+
+
+def test_move_category_down_at_bottom_of_its_kind_is_a_noop(tmp_path):
+    db = _db(tmp_path)
+    wants_before = [c["id"] for c in db.list_categories() if c["kind"] == "want"]
+    bottom_id = wants_before[-1]
+
+    db.move_category(bottom_id, "down")
+
+    wants_after = [c["id"] for c in db.list_categories() if c["kind"] == "want"]
+    assert wants_after == wants_before
+    db.close()
+
+
+def test_move_category_does_not_cross_into_a_different_kind(tmp_path):
+    db = _db(tmp_path)
+    # The last 'need' category and the first 'want' category are adjacent
+    # in id/insertion order but must never swap into each other's kind.
+    needs = [c for c in db.list_categories() if c["kind"] == "need"]
+    last_need_id = needs[-1]["id"]
+
+    db.move_category(last_need_id, "down")
+
+    needs_after = [c["id"] for c in db.list_categories() if c["kind"] == "need"]
+    assert needs_after[-1] == last_need_id, "moving down should not cross into 'want'"
+    db.close()

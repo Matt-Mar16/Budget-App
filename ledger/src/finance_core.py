@@ -70,7 +70,8 @@ class Database:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE NOT NULL,
             kind TEXT NOT NULL CHECK(kind IN ('need','want','saving','income')),
-            monthly_budget REAL DEFAULT 0
+            monthly_budget REAL DEFAULT 0,
+            sort_order INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS accounts (
@@ -343,6 +344,13 @@ class Database:
                 c.execute("ALTER TABLE categories_new RENAME TO categories")
             c.execute("PRAGMA foreign_keys=ON")
 
+        cat_cols = existing_cols("categories")
+        if "sort_order" not in cat_cols:
+            c.execute("ALTER TABLE categories ADD COLUMN sort_order INTEGER")
+            # Backfill with id so pre-existing categories keep a stable order
+            # (previously implicit alphabetical order) rather than all tying at 0.
+            c.execute("UPDATE categories SET sort_order = id WHERE sort_order IS NULL")
+
         had_contributions_col = "contributions" in acc_cols
 
         c.executescript("""
@@ -444,9 +452,9 @@ class Database:
                 ("Subscriptions", "want"), ("Travel", "want"),
                 ("Emergency Fund", "saving"), ("Retirement", "saving"), ("Investing", "saving"),
             ]
-            for name, kind in default_categories:
-                c.execute("INSERT OR IGNORE INTO categories(name, kind, monthly_budget) VALUES (?, ?, 0)",
-                           (name, kind))
+            for i, (name, kind) in enumerate(default_categories):
+                c.execute("INSERT OR IGNORE INTO categories(name, kind, monthly_budget, sort_order) "
+                          "VALUES (?, ?, 0, ?)", (name, kind, i))
 
             # meta: profile self-description, used by profiles.py instead of
             # a central profiles.json. Only stamped if not already present
@@ -543,14 +551,36 @@ class Database:
 
     # ---- categories ----
     def list_categories(self):
-        return self.conn.execute("SELECT * FROM categories ORDER BY kind, name").fetchall()
+        return self.conn.execute("SELECT * FROM categories ORDER BY kind, sort_order").fetchall()
 
     def add_category(self, name, kind, monthly_budget=0):
         self.conn.execute(
-            "INSERT INTO categories(name, kind, monthly_budget) VALUES (?, ?, ?)",
+            "INSERT INTO categories(name, kind, monthly_budget, sort_order) "
+            "VALUES (?, ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM categories))",
             (name, kind, monthly_budget),
         )
         self.conn.commit()
+
+    def move_category(self, category_id, direction):
+        """Swaps this category's sort_order with its same-kind neighbor
+        immediately above (direction='up') or below (direction='down') it.
+        A no-op at either end of the kind's list."""
+        cat = self.conn.execute("SELECT * FROM categories WHERE id=?", (category_id,)).fetchone()
+        if not cat:
+            return
+        siblings = self.conn.execute(
+            "SELECT id, sort_order FROM categories WHERE kind=? ORDER BY sort_order", (cat["kind"],)
+        ).fetchall()
+        idx = next(i for i, r in enumerate(siblings) if r["id"] == category_id)
+        swap_idx = idx - 1 if direction == "up" else idx + 1
+        if swap_idx < 0 or swap_idx >= len(siblings):
+            return
+        other = siblings[swap_idx]
+        with self.conn:
+            self.conn.execute("UPDATE categories SET sort_order=? WHERE id=?",
+                               (other["sort_order"], category_id))
+            self.conn.execute("UPDATE categories SET sort_order=? WHERE id=?",
+                               (cat["sort_order"], other["id"]))
 
     def set_category_budget(self, category_id, amount):
         self.conn.execute("UPDATE categories SET monthly_budget=? WHERE id=?", (amount, category_id))
@@ -789,7 +819,8 @@ class Database:
             cat = self.conn.execute("SELECT id FROM categories WHERE name='Cashback Rewards'").fetchone()
             if not cat:
                 self.conn.execute(
-                    "INSERT OR IGNORE INTO categories(name, kind, monthly_budget) VALUES (?, ?, 0)",
+                    "INSERT OR IGNORE INTO categories(name, kind, monthly_budget, sort_order) "
+                    "VALUES (?, ?, 0, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM categories))",
                     ("Cashback Rewards", "saving"))
                 cat = self.conn.execute("SELECT id FROM categories WHERE name='Cashback Rewards'").fetchone()
             cur = self.get_setting("reporting_currency", "GBP")
