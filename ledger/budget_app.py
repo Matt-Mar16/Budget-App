@@ -3390,8 +3390,19 @@ class SettingsTab(ScrollableTab):
         ttk.Entry(general, textvariable=self.budget_alert_threshold_var, width=10).grid(
             row=6, column=1, padx=6)
 
+        ttk.Label(general, text="Month start day (1 = calendar month)",
+                  style="CardDim.TLabel").grid(row=7, column=0, sticky="w")
+        self.month_start_day_var = tk.StringVar()
+        ttk.Entry(general, textvariable=self.month_start_day_var, width=10).grid(
+            row=7, column=1, padx=6)
+        ttk.Label(general, wraplength=420, justify="left", style="CardDim.TLabel",
+                  text="e.g. 25 if you're paid on the 25th — the Dashboard/Budgets/Insights "
+                       "\"month\" then runs 25th-24th instead of the 1st-end of the calendar "
+                       "month. Doesn't affect when bills are due or the UK tax year."
+                  ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
         ttk.Button(general, text="Save Settings", style="Accent.TButton",
-                   command=self.save_settings).grid(row=7, column=0, pady=10, sticky="w")
+                   command=self.save_settings).grid(row=9, column=0, pady=10, sticky="w")
 
         self.fx_frame = Card(self, title="FX Rates (1 unit of currency = X reporting currency)")
         fx_frame = self.fx_frame
@@ -3579,6 +3590,12 @@ class SettingsTab(ScrollableTab):
             db.set_setting("budget_alert_threshold_pct", self.budget_alert_threshold_var.get())
         except ValueError:
             pass
+        try:
+            day = int(self.month_start_day_var.get())
+            if 1 <= day <= 28:
+                db.set_setting("month_start_day", str(day))
+        except ValueError:
+            pass
         old_mode = db.get_setting("theme_mode", "dark")
         db.set_setting("theme_mode", self.theme_var.get())
         db.set_setting("currency_mode", self.currency_mode_var.get())
@@ -3613,6 +3630,7 @@ class SettingsTab(ScrollableTab):
         self.savings_target_var.set(db.get_setting("monthly_savings_target", "0"))
         self.hourly_wage_var.set(db.get_setting("hourly_wage", "0"))
         self.budget_alert_threshold_var.set(db.get_setting("budget_alert_threshold_pct", "80"))
+        self.month_start_day_var.set(db.get_setting("month_start_day", "1"))
         self.currency_mode_var.set(self.app.currency_mode())
 
         hidden_now = get_hidden_nav_tabs(db)
