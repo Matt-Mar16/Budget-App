@@ -246,7 +246,9 @@ def draw_bar_chart(canvas: tk.Canvas, categories, series, colors, unit_fmt=None,
     bar_gap = group_w * 0.16
     bar_w = (group_w - bar_gap * (n_series + 1)) / n_series
 
-    # legend
+    # legend: lay swatches out left to right, estimating each label's pixel
+    # width from its character count (6px/char) since Tkinter doesn't expose
+    # real text metrics before the text is actually drawn
     lx = pad_l
     for label, color_key, _ in series:
         color = colors.get(color_key, color_key)

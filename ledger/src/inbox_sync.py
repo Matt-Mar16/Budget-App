@@ -1,3 +1,25 @@
+"""
+inbox_sync.py — phone-entry bridge for THE LEDGER.
+
+Data flow: build_inbox_workbook() generates Inbox.xlsx (a Transactions
+table plus Accounts/Categories reference sheets exported live from the
+profile's database, used as dropdown sources) somewhere phone-synced —
+entries typed there on a phone reach the laptop via that sync, not via
+this code. sync_inbox() is the other half: run on the laptop, it reads
+whatever rows were typed, turns them into real transactions/transfers,
+and clears the sheet so the next sync doesn't re-import old rows.
+
+Safety order in sync_inbox() matters and is deliberate: every row is
+validated against known accounts/categories BEFORE anything is written
+anywhere (validate-before-mutate), then everything read is backed up to
+a CSV BEFORE the sheet is cleared (backup-before-clear) — so a crash or
+a bad row can't silently lose data, and a botched sync is always
+recoverable from the backup file. There's no automatic dedup: entering
+the same row twice creates two transactions, on purpose (a content-based
+fingerprint would also silently drop a legitimate same-day duplicate,
+e.g. two identical coffees).
+"""
+
 import csv
 import datetime
 from pathlib import Path
@@ -82,6 +104,10 @@ def _format_date(value):
 
 
 def _validate_exchange_pairs(exchange_rows):
+    # A currency exchange is entered as two separate inbox rows (one leg
+    # spending currency A, one leg receiving currency B) sharing the same
+    # Date -- group by date to find each pair before turning them into one
+    # linked transfer_between_accounts() call below.
     by_date = {}
     for row in exchange_rows:
         by_date.setdefault(_format_date(row["Date"]), []).append(row)
@@ -115,6 +141,10 @@ def sync_inbox(excel_path, db, backups_dir, now=None):
     exchange_rows = [r for r in rows if r["Category"] == CURRENCY_EXCHANGE_CATEGORY]
     normal_rows = [r for r in rows if r["Category"] != CURRENCY_EXCHANGE_CATEGORY]
 
+    # Validate every row before writing anything -- one bad row (typo'd
+    # account/category name, an unpaired exchange) aborts the whole sync
+    # instead of partially importing and leaving the sheet in a confusing
+    # half-cleared state.
     for row in rows:
         if row["Account"] not in accounts_by_name:
             raise ValueError(f"Unknown account {row['Account']!r} — not found in THE LEDGER's Accounts")
@@ -124,6 +154,9 @@ def sync_inbox(excel_path, db, backups_dir, now=None):
 
     exchange_pairs_by_date = _validate_exchange_pairs(exchange_rows)
 
+    # Back up exactly what was read before touching the database or the
+    # sheet, so an interrupted sync (crash, killed process) can always be
+    # recovered by hand from this CSV.
     backups_dir = Path(backups_dir)
     backups_dir.mkdir(parents=True, exist_ok=True)
     backup_path = backups_dir / f"pushed_{now.strftime('%Y-%m-%d_%H%M%S')}.csv"
