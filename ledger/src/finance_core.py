@@ -855,6 +855,17 @@ class Database:
             if new_acc and new_amount < 0 and new_acc["subtype"] == "credit_card" \
                     and (new_acc["cashback_rate"] or 0) > 0:
                 cashback = round(abs(new_amount) * new_acc["cashback_rate"] / 100.0, 2)
+                cap = new_acc["cashback_monthly_cap"] or 0
+                if cap > 0:
+                    earned_so_far = self.cashback_earned_this_month(new_account_id, new_date)
+                    # The OLD row (with its OLD cashback) is still in the table at this
+                    # point — exclude its own prior contribution from the baseline if it
+                    # would otherwise be double-counted (same account, same month), since
+                    # it's about to be replaced by the value we're computing now, not
+                    # added on top of it.
+                    if tx["account_id"] == new_account_id and tx["date"][:7] == new_date[:7]:
+                        earned_so_far -= (tx["cashback"] or 0)
+                    cashback = max(0.0, round(min(cashback, cap - earned_so_far), 2))
 
             self.conn.execute(
                 "UPDATE transactions SET date=?, payee=?, category_id=?, amount=?, currency=?, "

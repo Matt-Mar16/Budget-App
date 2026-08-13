@@ -145,6 +145,73 @@ def test_add_transaction_cashback_uncapped_when_cap_is_zero(tmp_path):
     db.close()
 
 
+def test_capped_cashback_is_what_gets_auto_invested_not_the_pre_cap_amount(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Card", "liability", 0.0, currency="GBP", subtype="credit_card",
+                    cashback_rate=10.0)
+    db.add_account("ISA", "asset", 0.0, currency="GBP", subtype="investment")
+    card_id = next(a["id"] for a in db.list_accounts() if a["name"] == "Card")
+    isa_id = next(a["id"] for a in db.list_accounts() if a["name"] == "ISA")
+    db.update_account_details(card_id, cashback_monthly_cap=5.0,
+                               cashback_auto_invest_account_id=isa_id)
+
+    # Naive cashback would be £10 (10% of £100), but the £5 cap must clamp it to £5
+    # BEFORE that capped figure is what gets auto-invested — not the pre-cap £10.
+    db.add_transaction("2026-08-01", "Shop", None, -100.0, "GBP", account_id=card_id)
+
+    assert db.get_account(isa_id)["balance"] == pytest.approx(5.0)
+    contributions = db.conn.execute(
+        "SELECT amount FROM investment_contributions WHERE account_id=?", (isa_id,)
+    ).fetchall()
+    assert len(contributions) == 1
+    assert contributions[0]["amount"] == pytest.approx(5.0)
+    db.close()
+
+
+def test_two_credit_cards_carry_independent_cashback_rates_and_caps(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Card A", "liability", 0.0, currency="GBP", subtype="credit_card",
+                    cashback_rate=10.0, cashback_monthly_cap=5.0)
+    db.add_account("Card B", "liability", 0.0, currency="GBP", subtype="credit_card",
+                    cashback_rate=2.0)  # no cap
+    card_a = next(a["id"] for a in db.list_accounts() if a["name"] == "Card A")
+    card_b = next(a["id"] for a in db.list_accounts() if a["name"] == "Card B")
+
+    tx_a = db.add_transaction("2026-08-01", "Shop", None, -1000.0, "GBP", account_id=card_a)  # capped to £5
+    tx_b = db.add_transaction("2026-08-01", "Shop", None, -1000.0, "GBP", account_id=card_b)  # uncapped: £20
+
+    cb_a = db.conn.execute("SELECT cashback FROM transactions WHERE id=?", (tx_a,)).fetchone()["cashback"]
+    cb_b = db.conn.execute("SELECT cashback FROM transactions WHERE id=?", (tx_b,)).fetchone()["cashback"]
+    assert cb_a == pytest.approx(5.0)
+    assert cb_b == pytest.approx(20.0)
+    # Spending more on Card A this month must not be affected by Card B's activity, or vice versa.
+    assert db.cashback_earned_this_month(card_a, date="2026-08-01") == pytest.approx(5.0)
+    assert db.cashback_earned_this_month(card_b, date="2026-08-01") == pytest.approx(20.0)
+    db.close()
+
+
+def test_update_transaction_respects_the_monthly_cashback_cap(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Card", "liability", 0.0, currency="GBP", subtype="credit_card",
+                    cashback_rate=10.0)
+    acc_id = db.list_accounts()[0]["id"]
+    db.update_account_details(acc_id, cashback_monthly_cap=5.0)
+
+    tx_a = db.add_transaction("2026-08-01", "Shop A", None, -30.0, "GBP", account_id=acc_id)  # £3.00
+    db.add_transaction("2026-08-02", "Shop B", None, -30.0, "GBP", account_id=acc_id)  # naive £3, capped to £2
+    assert db.cashback_earned_this_month(acc_id, date="2026-08-02") == pytest.approx(5.0)
+
+    # Editing tx_a's amount up (naive recompute would be £10) must still respect the
+    # cap, correctly excluding tx_a's OWN old £3.00 from the "already earned" baseline
+    # (it's about to be replaced, not added on top of).
+    db.update_transaction(tx_a, amount=-100.0)
+
+    tx_a_cashback = db.conn.execute("SELECT cashback FROM transactions WHERE id=?", (tx_a,)).fetchone()["cashback"]
+    assert tx_a_cashback == pytest.approx(3.0)  # cap(5) - Shop B's unchanged £2 = £3 headroom
+    assert db.cashback_earned_this_month(acc_id, date="2026-08-02") == pytest.approx(5.0)
+    db.close()
+
+
 def test_update_account_details_can_set_cashback_monthly_cap(tmp_path):
     db = _db(tmp_path)
     db.add_account("Card", "liability", 0.0, currency="GBP", subtype="credit_card", cashback_rate=5.0)
