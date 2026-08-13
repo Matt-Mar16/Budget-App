@@ -2180,6 +2180,8 @@ class NetWorthTab(ScrollableTab):
         ttk.Button(btn_row, text="View Ledger…", command=self.open_account_ledger).pack(side="left")
         ttk.Button(btn_row, text="Export Statement…", command=self.export_account_statement).pack(
             side="left", padx=6)
+        ttk.Button(btn_row, text="Reconcile…", command=self.open_reconcile_dialog).pack(
+            side="left", padx=6)
 
         summary_row = ttk.Frame(self)
         summary_row.pack(fill="x", pady=(0, 10))
@@ -2416,6 +2418,62 @@ class NetWorthTab(ScrollableTab):
             return
         n = export_account_statement_csv(self.app.db, account_id, path)
         messagebox.showinfo("Exported", f"Exported {n} row(s) of {acc['name']}'s statement to:\n{path}")
+
+    def open_reconcile_dialog(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("Reconcile", "Select an account first.")
+            return
+        account_id = int(sel[0])
+        acc = self.app.db.get_account(account_id)
+        if not acc:
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Reconcile Balance")
+        win.configure(bg=self.app.c["bg"])
+        win.geometry("360x220")
+
+        ttk.Label(win, text=f"{acc['name']} — tracked balance: "
+                             f"{fmt_money(acc['balance'], acc['currency'])}",
+                  style="H2.TLabel", wraplength=320, justify="left").pack(
+            anchor="w", padx=14, pady=(14, 8))
+
+        ttk.Label(win, text="Actual balance from your statement", style="TLabel").pack(
+            anchor="w", padx=14, pady=(0, 2))
+        actual_var = tk.StringVar(value=f"{acc['balance']:.2f}")
+        ttk.Entry(win, textvariable=actual_var).pack(fill="x", padx=14)
+
+        diff_label = ttk.Label(win, style="CardDim.TLabel")
+        diff_label.pack(anchor="w", padx=14, pady=(8, 0))
+
+        def update_diff_preview(*_):
+            try:
+                actual = float(actual_var.get())
+            except ValueError:
+                diff_label.config(text="")
+                return
+            diff = actual - acc["balance"]
+            if abs(diff) < 0.005:
+                diff_label.config(text="Already matches — no adjustment needed.")
+            else:
+                diff_label.config(
+                    text=f"Will record an adjustment of {fmt_money(diff, acc['currency'])}.")
+        actual_var.trace_add("write", update_diff_preview)
+        update_diff_preview()
+
+        def do_reconcile():
+            try:
+                actual = float(actual_var.get())
+            except ValueError:
+                messagebox.showerror("Reconcile", "Enter a valid balance.")
+                return
+            self.app.db.add_balance_adjustment(account_id, actual, date=self.app.today.isoformat())
+            win.destroy()
+            self.app.refresh_all()
+
+        ttk.Button(win, text="Reconcile", style="Accent.TButton", command=do_reconcile).pack(
+            anchor="e", padx=14, pady=16)
 
     def open_account_ledger(self):
         sel = self.tree.selection()

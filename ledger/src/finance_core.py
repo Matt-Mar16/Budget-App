@@ -580,10 +580,12 @@ class Database:
             self.conn.execute("DELETE FROM categories WHERE id=?", (category_id,))
 
     # ---- transactions ----
-    def add_transaction(self, date, payee, category_id, amount, currency, note="", account_id=None):
+    def add_transaction(self, date, payee, category_id, amount, currency, note="", account_id=None,
+                         apply_cashback_roundup=True):
         acc = self.get_account(account_id) if account_id else None
         cashback = 0.0
-        if acc and amount < 0 and acc["subtype"] == "credit_card" and (acc["cashback_rate"] or 0) > 0:
+        if (apply_cashback_roundup and acc and amount < 0 and acc["subtype"] == "credit_card"
+                and (acc["cashback_rate"] or 0) > 0):
             cashback = round(abs(amount) * acc["cashback_rate"] / 100.0, 2)
         # If this card has an auto-invest target configured, cashback is
         # routed straight into that investment account's cost basis via the
@@ -601,7 +603,7 @@ class Database:
             tx_id = cur.lastrowid
             if acc:
                 self._apply_balance_effect_nocommit(acc, amount, currency)
-            if amount < 0:
+            if apply_cashback_roundup and amount < 0:
                 self._apply_roundup_nocommit(tx_id, date, amount)
             if cashback_redeemed:
                 self.conn.execute(
@@ -612,6 +614,26 @@ class Database:
                     (auto_invest_id, date, cashback, f"Auto-invested cashback from {payee}"),
                 )
         return tx_id
+
+    def add_balance_adjustment(self, account_id, actual_balance, date=None):
+        """Corrects an account's tracked balance to match a real statement by
+        inserting a plain adjustment transaction for the difference, so the
+        correction is traceable in the ledger like any other transaction
+        instead of silently overwriting `balance`. Returns the new
+        transaction's id, or None if the balance already matched (no
+        adjustment needed). Never triggers cashback/round-ups — a
+        correction isn't a purchase."""
+        acc = self.get_account(account_id)
+        raw_diff = round(actual_balance - acc["balance"], 2)
+        if raw_diff == 0:
+            return None
+        delta = -raw_diff if acc["kind"] == "liability" else raw_diff
+        date = date or datetime.date.today().isoformat()
+        return self.add_transaction(
+            date, "Balance Adjustment", None, delta, acc["currency"],
+            note="Reconciled to match statement", account_id=account_id,
+            apply_cashback_roundup=False,
+        )
 
     def _require_unreconciled(self, tx_id):
         row = self.conn.execute("SELECT reconciled FROM transactions WHERE id=?", (tx_id,)).fetchone()

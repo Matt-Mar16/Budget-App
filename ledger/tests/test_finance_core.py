@@ -36,6 +36,75 @@ def _db(tmp_path):
     return Database(str(tmp_path / "test.db"))
 
 
+def test_add_balance_adjustment_raises_an_asset_account_to_match_a_statement(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 100.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+
+    tx_id = db.add_balance_adjustment(acc_id, 150.0)
+
+    assert tx_id is not None
+    tx = db.conn.execute("SELECT * FROM transactions WHERE id=?", (tx_id,)).fetchone()
+    assert tx["amount"] == pytest.approx(50.0)
+    assert tx["payee"] == "Balance Adjustment"
+    assert db.get_account(acc_id)["balance"] == pytest.approx(150.0)
+    db.close()
+
+
+def test_add_balance_adjustment_lowers_an_asset_account_to_match_a_statement(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 100.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+
+    tx_id = db.add_balance_adjustment(acc_id, 60.0)
+
+    tx = db.conn.execute("SELECT * FROM transactions WHERE id=?", (tx_id,)).fetchone()
+    assert tx["amount"] == pytest.approx(-40.0)
+    assert db.get_account(acc_id)["balance"] == pytest.approx(60.0)
+    db.close()
+
+
+def test_add_balance_adjustment_handles_liability_accounts_correctly(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Credit Card", "liability", -200.0, currency="GBP", subtype="credit_card")
+    acc_id = db.list_accounts()[0]["id"]
+
+    # Correcting to a real statement balance of -250.0 (owe more than tracked)
+    db.add_balance_adjustment(acc_id, -250.0)
+
+    assert db.get_account(acc_id)["balance"] == pytest.approx(-250.0)
+    db.close()
+
+
+def test_add_balance_adjustment_does_nothing_when_balance_already_matches(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 100.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+
+    tx_id = db.add_balance_adjustment(acc_id, 100.0)
+
+    assert tx_id is None
+    assert len(db.list_transactions()) == 0
+    db.close()
+
+
+def test_add_balance_adjustment_does_not_trigger_cashback_or_roundup(tmp_path):
+    db = _db(tmp_path)
+    db.set_setting("roundup_enabled", "1")
+    db.add_account("Credit Card", "liability", -100.0, currency="GBP", subtype="credit_card",
+                    cashback_rate=5.0)
+    acc_id = db.list_accounts()[0]["id"]
+
+    tx_id = db.add_balance_adjustment(acc_id, -150.0)  # a -50 amount transaction
+
+    tx = db.conn.execute("SELECT * FROM transactions WHERE id=?", (tx_id,)).fetchone()
+    assert tx["cashback"] == 0.0
+    assert db.conn.execute(
+        "SELECT COUNT(*) FROM roundups WHERE transaction_id=?", (tx_id,)
+    ).fetchone()[0] == 0
+    db.close()
+
+
 def test_transfer_between_accounts_uses_explicit_to_amount_when_given(tmp_path):
     db = _db(tmp_path)
     db.add_account("UK Bank", "asset", 1200.0, currency="GBP")
