@@ -55,6 +55,31 @@ def test_list_transfers_joins_both_legs_of_a_transfer(tmp_path):
     assert row["to_amount"] == pytest.approx(100.0)
     assert row["from_currency"] == "GBP"
     assert row["leg_id"] is not None
+    db.close()
+
+
+def test_list_transfers_and_delete_handle_cross_currency_transfers_correctly(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("UK Bank", "asset", 1200.0, currency="GBP")
+    db.add_account("CAD Chequing", "asset", 0.0, currency="CAD")
+    accounts = {a["name"]: a["id"] for a in db.list_accounts()}
+
+    db.transfer_between_accounts(
+        accounts["UK Bank"], accounts["CAD Chequing"], 500.0, to_amount=860.0, date="2026-09-05")
+
+    row = db.list_transfers()[0]
+    assert row["from_currency"] == "GBP"
+    assert row["to_currency"] == "CAD"
+    assert row["from_amount"] == pytest.approx(500.0)
+    assert row["to_amount"] == pytest.approx(860.0)
+    assert row["historical_rate"] == pytest.approx(860.0 / 500.0)
+
+    db.delete_transaction(row["leg_id"])
+
+    assert db.list_transfers() == []
+    assert db.get_account(accounts["UK Bank"])["balance"] == pytest.approx(1200.0)
+    assert db.get_account(accounts["CAD Chequing"])["balance"] == pytest.approx(0.0)
+    db.close()
 
 
 def test_list_transfers_leg_id_can_be_used_to_delete_the_whole_pair(tmp_path):

@@ -2500,14 +2500,17 @@ class NetWorthTab(ScrollableTab):
         if not sel:
             messagebox.showinfo("Delete Transfer", "Select a transfer first.")
             return
-        try:
-            self.app.db.delete_transaction(int(sel[0]))
-        except ReconciledTransactionError:
+        blocked = 0
+        for iid in sel:
+            try:
+                self.app.db.delete_transaction(int(iid))
+            except ReconciledTransactionError:
+                blocked += 1
+        if blocked:
             messagebox.showinfo(
                 "Reconciled transaction",
-                "One leg of this transfer is reconciled/locked and was not deleted. "
-                "Unreconcile it first if you need to remove this transfer.")
-            return
+                f"{blocked} selected transfer(s) are reconciled/locked and were not deleted. "
+                "Unreconcile them first if you need to remove them.")
         self.app.refresh_all()
 
     def open_account_ledger(self):
@@ -2661,7 +2664,10 @@ class NetWorthTab(ScrollableTab):
         for row in self.transfers_tree.get_children():
             self.transfers_tree.delete(row)
         for t in self.app.db.list_transfers():
-            rate_text = f"{t['historical_rate']:.4f}" if t["from_currency"] != t["to_currency"] else "—"
+            if t["from_currency"] == t["to_currency"] or t["historical_rate"] is None:
+                rate_text = "—"
+            else:
+                rate_text = f"{t['historical_rate']:.4f}"
             self.transfers_tree.insert("", "end", iid=str(t["leg_id"]), values=(
                 t["date"], t["from_account"] or "(deleted)", t["to_account"] or "(deleted)",
                 fmt_money(t["from_amount"], t["from_currency"]),
