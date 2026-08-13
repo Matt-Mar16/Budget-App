@@ -172,6 +172,40 @@ def test_custom_month_for_date_rolls_the_year_back_at_january(tmp_path):
     db.close()
 
 
+def test_transactions_in_month_default_behavior_is_unchanged(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_transaction("2026-07-31", "Old", None, -10.0, "GBP", account_id=acc_id)
+    db.add_transaction("2026-08-01", "In", None, -20.0, "GBP", account_id=acc_id)
+    db.add_transaction("2026-08-31", "Also in", None, -30.0, "GBP", account_id=acc_id)
+    db.add_transaction("2026-09-01", "Next", None, -40.0, "GBP", account_id=acc_id)
+
+    rows = db.transactions_in_month(2026, 8)
+
+    assert {r["payee"] for r in rows} == {"In", "Also in"}
+    db.close()
+
+
+def test_transactions_in_month_respects_a_custom_start_day(tmp_path):
+    db = _db(tmp_path)
+    db.set_setting("month_start_day", "25")
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_transaction("2026-07-24", "Before period", None, -10.0, "GBP", account_id=acc_id)
+    db.add_transaction("2026-07-25", "Period starts", None, -20.0, "GBP", account_id=acc_id)
+    db.add_transaction("2026-08-24", "Period ends", None, -30.0, "GBP", account_id=acc_id)
+    db.add_transaction("2026-08-25", "Next period", None, -40.0, "GBP", account_id=acc_id)
+
+    # With month_start_day=25, the period spanning 25 Jul-24 Aug is labeled
+    # by its STARTING calendar month -- i.e. month=7, not month=8 (already
+    # established and tested in month_bounds(db, 2026, 8) == Aug25-Sep24).
+    rows = db.transactions_in_month(2026, 7)
+
+    assert {r["payee"] for r in rows} == {"Period starts", "Period ends"}
+    db.close()
+
+
 def test_advance_date_monthly_still_advances_by_exactly_one_month_and_rolls_over_years(tmp_path):
     # Regression coverage for the shared month-rollover math this same task
     # generalized to also support custom N-month intervals — this had no

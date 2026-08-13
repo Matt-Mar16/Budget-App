@@ -1061,21 +1061,23 @@ class Database:
         ).fetchall()
 
     def transactions_in_month(self, year, month, include_transfers=False):
-        """Transactions for the given month, for financial aggregation
-        (monthly totals, savings rate, budgets, anomaly detection, etc).
-        Transfers between the user's own accounts are excluded by default
-        — moving money from Checking to Savings isn't income or an
-        expense, and counting both legs would double-count it as both.
-        Pass include_transfers=True for ledger-style views that want to
-        see everything that happened that month."""
-        prefix = f"{year:04d}-{month:02d}"
+        """Transactions for the given reporting month, for financial
+        aggregation (monthly totals, savings rate, budgets, anomaly
+        detection, etc). The real date range is determined by
+        month_bounds() (respects the month_start_day setting; defaults to
+        a plain calendar month). Transfers between the user's own accounts
+        are excluded by default — moving money from Checking to Savings
+        isn't income or an expense, and counting both legs would
+        double-count it as both. Pass include_transfers=True for
+        ledger-style views that want to see everything that happened."""
+        start_date, end_date = month_bounds(self, year, month)
         transfer_clause = "" if include_transfers else "AND t.is_transfer = 0 "
         return self.conn.execute(
             "SELECT t.*, c.name as category_name, c.kind as category_kind, a.name as account_name "
             "FROM transactions t LEFT JOIN categories c ON t.category_id = c.id "
             "LEFT JOIN accounts a ON t.account_id = a.id "
-            f"WHERE t.date LIKE ? {transfer_clause}ORDER BY date",
-            (prefix + "%",),
+            f"WHERE t.date >= ? AND t.date <= ? {transfer_clause}ORDER BY date",
+            (start_date, end_date),
         ).fetchall()
 
     def account_ledger(self, account_id, limit=1000):

@@ -244,7 +244,10 @@ def test_transactions_in_month_respects_a_custom_start_day(tmp_path):
     db.add_transaction("2026-08-24", "Period ends", None, -30.0, "GBP", account_id=acc_id)
     db.add_transaction("2026-08-25", "Next period", None, -40.0, "GBP", account_id=acc_id)
 
-    rows = db.transactions_in_month(2026, 8)
+    # With month_start_day=25, the period spanning 25 Jul-24 Aug is labeled
+    # by its STARTING calendar month -- i.e. month=7, not month=8 (already
+    # established and tested in month_bounds(db, 2026, 8) == Aug25-Sep24).
+    rows = db.transactions_in_month(2026, 7)
 
     assert {r["payee"] for r in rows} == {"Period starts", "Period ends"}
     db.close()
