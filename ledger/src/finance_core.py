@@ -645,13 +645,17 @@ class Database:
             if cap > 0:
                 earned_so_far = self.cashback_earned_this_month(account_id, date)
                 cashback = max(0.0, round(min(cashback, cap - earned_so_far), 2))
-        # If this card has an auto-invest target configured, cashback is
-        # routed straight into that investment account's cost basis via the
-        # same balance+contributions update add_investment_contribution()
-        # uses, instead of sitting unredeemed for later manual redemption.
-        auto_invest_id = acc["cashback_auto_invest_account_id"] if acc else None
-        cashback_redeemed = 1 if (cashback > 0 and auto_invest_id) else 0
-        with self.conn:  # atomic: insert + balance effect + roundup + auto-invest together
+        # If this card has a cashback destination configured, cashback is
+        # routed straight into that account instead of sitting unredeemed for
+        # later manual redemption. An investment destination gets the same
+        # balance+contributions update add_investment_contribution() uses (so
+        # cost basis stays accurate); any other destination (e.g. the Round-Up
+        # Jar) gets a plain balance credit, same as a round-up sweep -- no
+        # cost-basis concept applies to a spare-change pot.
+        cashback_target_id = acc["cashback_auto_invest_account_id"] if acc else None
+        cashback_target_acc = self.get_account(cashback_target_id) if cashback_target_id else None
+        cashback_redeemed = 1 if (cashback > 0 and cashback_target_acc) else 0
+        with self.conn:  # atomic: insert + balance effect + roundup + cashback routing together
             cur = self.conn.execute(
                 "INSERT INTO transactions(date, payee, category_id, amount, currency, note, account_id, "
                 "cashback, cashback_redeemed, is_transfer) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -664,13 +668,19 @@ class Database:
             if apply_cashback_roundup and amount < 0:
                 self._apply_roundup_nocommit(tx_id, date, amount)
             if cashback_redeemed:
-                self.conn.execute(
-                    "UPDATE accounts SET balance = balance + ?, contributions = contributions + ? WHERE id=?",
-                    (cashback, cashback, auto_invest_id))
-                self.conn.execute(
-                    "INSERT INTO investment_contributions(account_id, date, amount, note) VALUES (?, ?, ?, ?)",
-                    (auto_invest_id, date, cashback, f"Auto-invested cashback from {payee}"),
-                )
+                if cashback_target_acc["subtype"] == "investment":
+                    self.conn.execute(
+                        "UPDATE accounts SET balance = balance + ?, contributions = contributions + ? "
+                        "WHERE id=?", (cashback, cashback, cashback_target_id))
+                    self.conn.execute(
+                        "INSERT INTO investment_contributions(account_id, date, amount, note) "
+                        "VALUES (?, ?, ?, ?)",
+                        (cashback_target_id, date, cashback, f"Auto-invested cashback from {payee}"),
+                    )
+                else:
+                    self.conn.execute(
+                        "UPDATE accounts SET balance = balance + ? WHERE id=?",
+                        (cashback, cashback_target_id))
         return tx_id
 
     def add_balance_adjustment(self, account_id, actual_balance, date=None):

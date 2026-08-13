@@ -857,6 +857,32 @@ def test_add_transaction_auto_invests_cashback_when_card_has_an_auto_invest_targ
     db.close()
 
 
+def test_add_transaction_routes_cashback_to_the_roundup_jar_as_a_plain_balance_credit(tmp_path):
+    db = _db(tmp_path)
+    jar = db.get_or_create_roundup_jar()
+    db.add_account("Rewards Card", "liability", 0.0, currency="GBP", subtype="credit_card",
+                    cashback_rate=1.5)
+    card_id = next(a["id"] for a in db.list_accounts() if a["name"] == "Rewards Card")
+    db.update_account_details(card_id, cashback_auto_invest_account_id=jar["id"])
+
+    tx_id = db.add_transaction(
+        date="2026-09-03", payee="Tesco", category_id=None, amount=-100.0, currency="GBP",
+        account_id=card_id,
+    )
+
+    jar_after = db.get_account(jar["id"])
+    assert jar_after["balance"] == pytest.approx(1.5)
+    # A jar has no cost-basis concept -- unlike the investment-destination
+    # case, contributions must NOT move and no investment_contributions row
+    # should be created for it.
+    assert jar_after["contributions"] == pytest.approx(0.0)
+    assert db.get_investment_contributions(jar["id"]) == []
+
+    tx = db.conn.execute("SELECT cashback_redeemed FROM transactions WHERE id=?", (tx_id,)).fetchone()
+    assert tx["cashback_redeemed"] == 1
+    db.close()
+
+
 def test_update_account_details_clears_cashback_auto_invest_target_when_passed_zero(tmp_path):
     db = _db(tmp_path)
     db.add_account("Index Fund", "asset", 0.0, currency="GBP", subtype="investment")

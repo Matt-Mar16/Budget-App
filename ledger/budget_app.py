@@ -2898,23 +2898,20 @@ class NetWorthTab(ScrollableTab):
             anchor="e", padx=14, pady=16)
 
     def _set_cashback_auto_invest(self, account_id):
+        jar = self.app.db.get_or_create_roundup_jar()
         investments = [a for a in self.app.db.list_accounts() if a["subtype"] == "investment"]
-        if not investments:
-            messagebox.showinfo(
-                "Auto-Invest Cashback",
-                "You need at least one Investment account first — add one above, then come back here.")
-            return
+        targets = [jar] + investments
 
         win = tk.Toplevel(self)
-        win.title("Auto-Invest Cashback")
+        win.title("Cashback Destination")
         win.configure(bg=self.app.c["bg"])
         win.geometry("340x160")
 
         ttk.Label(win, text="Route this card's cashback straight into:", style="TLabel").pack(
             anchor="w", padx=14, pady=(14, 4))
-        names = ["(none — accumulate for manual redemption)"] + [a["name"] for a in investments]
-        by_name = {a["name"]: a["id"] for a in investments}
-        current = next((a["name"] for a in investments
+        names = ["(none — accumulate for manual redemption)"] + [a["name"] for a in targets]
+        by_name = {a["name"]: a["id"] for a in targets}
+        current = next((a["name"] for a in targets
                          if a["id"] == self.app.db.get_account(account_id)["cashback_auto_invest_account_id"]),
                         names[0])
         target_var = tk.StringVar(value=current)
@@ -3045,9 +3042,9 @@ class NetWorthTab(ScrollableTab):
                 if a["cashback_rate"]:
                     target = next((acc["name"] for acc in self.app.db.list_accounts()
                                    if acc["id"] == a["cashback_auto_invest_account_id"]), None)
-                    invest_text = f"Auto-invests into {target}" if target else "Cashback not auto-invested"
-                    ttk.Label(bottom, text=f"  ·  {invest_text}", style="CardDim.TLabel").pack(side="left")
-                    ttk.Button(bottom, text="Set Auto-Invest",
+                    dest_text = f"Cashback routed to {target}" if target else "Cashback not routed anywhere"
+                    ttk.Label(bottom, text=f"  ·  {dest_text}", style="CardDim.TLabel").pack(side="left")
+                    ttk.Button(bottom, text="Set Cashback Destination",
                                command=lambda aid=a["id"]: self._set_cashback_auto_invest(aid)).pack(
                         side="left", padx=8)
 
