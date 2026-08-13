@@ -55,6 +55,7 @@ from finance_core import (
     budget_run_rate, categories_over_threshold, top_payees, daily_spend_totals,
     detect_recurring_candidates, refresh_profile_csvs, apply_profile_csvs,
     income_by_category, custom_month_for_date, month_bounds,
+    whatif_category_adjustment, goal_projection,
 )
 import profiles
 import theme
@@ -365,6 +366,7 @@ NAV_GROUPS = [
         ("transactions", "💳", "Transactions"),
         ("budgets", "🧾", "Budgets"),
         ("insights", "🔎", "Insights"),
+        ("forecast", "🧭", "Forecast"),
     ]),
     ("Planning", [
         ("recurring", "🔁", "Recurring"),
@@ -532,6 +534,7 @@ class App(tk.Tk):
             "investments": InvestmentsTab(self.container, self),
             "tax": TaxTab(self.container, self),
             "insights": InsightsTab(self.container, self),
+            "forecast": ForecastTab(self.container, self),
             "rewards": RewardsTab(self.container, self),
             "settings": SettingsTab(self.container, self),
         }
@@ -1687,23 +1690,6 @@ class BudgetsTab(ScrollableTab):
         ttk.Button(add_frame, text="Add Category", style="Accent.TButton",
                    command=self.add_category).grid(row=0, column=3, padx=8)
 
-        c = self.app.c
-        donuts_card = Card(self, title="Actual vs. Budgeted — This Period")
-        donuts_card.pack(fill="x", pady=(0, 8))
-        donuts_row = ttk.Frame(donuts_card, style="Card.TFrame")
-        donuts_row.pack(fill="both", expand=True)
-        actual_col = ttk.Frame(donuts_row, style="Card.TFrame")
-        actual_col.pack(side="left", fill="both", expand=True, padx=(0, 5))
-        ttk.Label(actual_col, text="Actual spend by category", style="CardDim.TLabel").pack(anchor="w")
-        self.actual_donut_canvas = tk.Canvas(actual_col, height=200, highlightthickness=0, bg=c["card"])
-        self.actual_donut_canvas.pack(fill="both", expand=True)
-        budgeted_col = ttk.Frame(donuts_row, style="Card.TFrame")
-        budgeted_col.pack(side="left", fill="both", expand=True, padx=(5, 0))
-        ttk.Label(budgeted_col, text="Budgeted allocation by category", style="CardDim.TLabel").pack(
-            anchor="w")
-        self.budgeted_donut_canvas = tk.Canvas(budgeted_col, height=200, highlightthickness=0, bg=c["card"])
-        self.budgeted_donut_canvas.pack(fill="both", expand=True)
-
         self.canvas_frame = ttk.Frame(self)
         self.canvas_frame.pack(fill="both", expand=True)
 
@@ -1745,23 +1731,6 @@ class BudgetsTab(ScrollableTab):
         for cat in db.list_categories():
             groups[cat["kind"]].append(cat)
         income_totals = {r["category_id"]: r["total"] for r in income_by_category(db, y, m)}
-
-        spend_categories = [cat for kind in ("need", "want", "saving") for cat in groups[kind]]
-        actual_segments = [
-            (cat["name"], spend_by_cat.get(cat["id"], 0.0), CATEGORY_CHART_COLORS[i % len(CATEGORY_CHART_COLORS)])
-            for i, cat in enumerate(spend_categories) if spend_by_cat.get(cat["id"], 0.0) > 0
-        ]
-        budgeted_segments = [
-            (cat["name"], cat["monthly_budget"] or 0.0,
-             CATEGORY_CHART_COLORS[i % len(CATEGORY_CHART_COLORS)])
-            for i, cat in enumerate(spend_categories) if (cat["monthly_budget"] or 0.0) > 0
-        ]
-        total_actual = sum(v for _, v, _ in actual_segments)
-        total_budgeted = sum(v for _, v, _ in budgeted_segments)
-        charts.draw_donut_chart(self.actual_donut_canvas, actual_segments, c,
-                                 center_label=fmt_money(total_actual, cur), center_sub="actual")
-        charts.draw_donut_chart(self.budgeted_donut_canvas, budgeted_segments, c,
-                                 center_label=fmt_money(total_budgeted, cur), center_sub="budgeted")
 
         titles = {"need": "Needs (50%)", "want": "Wants (30%)", "saving": "Savings/Debt (20%)"}
         col = 0
@@ -3490,6 +3459,218 @@ class InsightsTab(ScrollableTab):
         totals = daily_spend_totals(db, y, m)
         charts.draw_calendar_heatmap(self.heatmap_canvas, y, m, totals, c,
                                       unit_fmt=lambda v: fmt_money(v, cur))
+
+
+# --------------------------------------------------------------------------
+# Forecast — spend trend/run-rate, actual-vs-budgeted, what-if, goal tracker
+# --------------------------------------------------------------------------
+
+FORECAST_RANGE_LABELS = {"6 months": 6, "12 months": 12, "24 months": 24, "36 months": 36}
+WHATIF_KIND_LABELS = {"Need": "need", "Want": "want", "Saving": "saving"}
+
+
+class ForecastTab(ScrollableTab):
+    def __init__(self, parent, app: App):
+        super().__init__(parent, app)
+        self.app = app
+        self._build()
+
+    def _build(self):
+        c = self.app.c
+        ttk.Label(self, text="Where spending is heading, and what it takes to hit a goal — "
+                              "forward-looking, unlike Insights' look back at where money went.",
+                  style="CardDim.TLabel", wraplength=800, justify="left").pack(anchor="w", pady=(0, 8))
+
+        trend_card = Card(self, title="Expense Trend")
+        trend_card.pack(fill="x", pady=(0, 10))
+        range_row = ttk.Frame(trend_card, style="Card.TFrame")
+        range_row.pack(fill="x", anchor="e")
+        ttk.Label(range_row, text="Range", style="CardDim.TLabel").pack(side="left", padx=(0, 6))
+        self.trend_range_var = tk.StringVar(value="6 months")
+        range_combo = ttk.Combobox(range_row, textvariable=self.trend_range_var,
+                                    values=list(FORECAST_RANGE_LABELS.keys()), width=10, state="readonly")
+        range_combo.pack(side="left")
+        range_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        self.trend_canvas = tk.Canvas(trend_card, height=200, highlightthickness=0, bg=c["card"])
+        self.trend_canvas.pack(fill="both", expand=True)
+
+        run_rate_card = Card(self, title="Run-Rate Projection — This Period")
+        run_rate_card.pack(fill="x", pady=(0, 10))
+        ttk.Label(run_rate_card, text="Budgeted categories projected from spend-so-far, worst first.",
+                  style="CardDim.TLabel").pack(anchor="w")
+        self.run_rate_frame = ttk.Frame(run_rate_card, style="Card.TFrame")
+        self.run_rate_frame.pack(fill="x", pady=(6, 0))
+
+        donuts_card = Card(self, title="Actual vs. Budgeted — This Period")
+        donuts_card.pack(fill="x", pady=(0, 10))
+        donuts_row = ttk.Frame(donuts_card, style="Card.TFrame")
+        donuts_row.pack(fill="both", expand=True)
+        actual_col = ttk.Frame(donuts_row, style="Card.TFrame")
+        actual_col.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        ttk.Label(actual_col, text="Actual spend by category", style="CardDim.TLabel").pack(anchor="w")
+        self.actual_donut_canvas = tk.Canvas(actual_col, height=200, highlightthickness=0, bg=c["card"])
+        self.actual_donut_canvas.pack(fill="both", expand=True)
+        budgeted_col = ttk.Frame(donuts_row, style="Card.TFrame")
+        budgeted_col.pack(side="left", fill="both", expand=True, padx=(5, 0))
+        ttk.Label(budgeted_col, text="Budgeted allocation by category", style="CardDim.TLabel").pack(
+            anchor="w")
+        self.budgeted_donut_canvas = tk.Canvas(budgeted_col, height=200, highlightthickness=0, bg=c["card"])
+        self.budgeted_donut_canvas.pack(fill="both", expand=True)
+
+        whatif_card = Card(self, title="What If…")
+        whatif_card.pack(fill="x", pady=(0, 10))
+        ttk.Label(whatif_card, text="See the effect of spending more or less in a category type this "
+                                     "period, without changing any real data.",
+                  style="CardDim.TLabel", wraplength=760, justify="left").pack(anchor="w")
+        whatif_row = ttk.Frame(whatif_card, style="Card.TFrame")
+        whatif_row.pack(fill="x", pady=(8, 0))
+        ttk.Label(whatif_row, text="Category type", style="CardDim.TLabel").pack(side="left")
+        self.whatif_kind_var = tk.StringVar(value="Want")
+        ttk.Combobox(whatif_row, textvariable=self.whatif_kind_var, values=list(WHATIF_KIND_LABELS.keys()),
+                     width=10, state="readonly").pack(side="left", padx=(4, 12))
+        ttk.Label(whatif_row, text="Adjust spend by (negative = spend less)",
+                  style="CardDim.TLabel").pack(side="left")
+        self.whatif_delta_var = tk.StringVar(value="-50")
+        ttk.Entry(whatif_row, textvariable=self.whatif_delta_var, width=10).pack(side="left", padx=(4, 12))
+        ttk.Button(whatif_row, text="Calculate", style="Accent.TButton",
+                   command=self._calculate_whatif).pack(side="left")
+        self.whatif_result_label = ttk.Label(whatif_card, style="CardDim.TLabel", wraplength=760,
+                                              justify="left")
+        self.whatif_result_label.pack(anchor="w", pady=(8, 0))
+
+        goal_card = Card(self, title="Savings / Net Worth Goal")
+        goal_card.pack(fill="x", pady=(0, 10))
+        goal_row = ttk.Frame(goal_card, style="Card.TFrame")
+        goal_row.pack(fill="x")
+        ttk.Label(goal_row, text="Target amount", style="CardDim.TLabel").pack(side="left")
+        self.goal_amount_var = tk.StringVar()
+        ttk.Entry(goal_row, textvariable=self.goal_amount_var, width=12).pack(side="left", padx=(4, 12))
+        ttk.Label(goal_row, text="By date (YYYY-MM-DD)", style="CardDim.TLabel").pack(side="left")
+        self.goal_date_var = tk.StringVar()
+        ttk.Entry(goal_row, textvariable=self.goal_date_var, width=12).pack(side="left", padx=(4, 12))
+        ttk.Button(goal_row, text="Save Goal", style="Accent.TButton",
+                   command=self._save_goal).pack(side="left")
+        self.goal_result_label = ttk.Label(goal_card, style="CardDim.TLabel", wraplength=760,
+                                            justify="left")
+        self.goal_result_label.pack(anchor="w", pady=(8, 0))
+
+    def _calculate_whatif(self):
+        db = self.app.db
+        cur = self.app.reporting_currency()
+        y, m = self.app.view_year, self.app.view_month
+        kind = WHATIF_KIND_LABELS[self.whatif_kind_var.get()]
+        try:
+            delta = float(self.whatif_delta_var.get())
+        except ValueError:
+            self.whatif_result_label.config(text="Enter a valid number.")
+            return
+        result = whatif_category_adjustment(db, y, m, category_kind=kind, delta_amount=delta)
+        if result["income"] <= 0:
+            self.whatif_result_label.config(
+                text="No income logged this period yet — savings rate can't be projected.")
+            return
+        cur_rate = result["current_savings_rate"] or 0.0
+        new_rate = result["new_savings_rate"] or 0.0
+        self.whatif_result_label.config(
+            text=f"Expenses: {fmt_money(result['current_expenses'], cur)} → "
+                 f"{fmt_money(result['new_expenses'], cur)}   ·   "
+                 f"Savings rate: {cur_rate*100:.1f}% → {new_rate*100:.1f}%")
+
+    def _save_goal(self):
+        try:
+            amount = float(self.goal_amount_var.get())
+        except ValueError:
+            messagebox.showerror("Goal", "Target amount must be a number.")
+            return
+        try:
+            datetime.date.fromisoformat(self.goal_date_var.get().strip())
+        except ValueError:
+            messagebox.showerror("Goal", "Target date must be YYYY-MM-DD.")
+            return
+        self.app.db.set_setting("goal_target_amount", amount)
+        self.app.db.set_setting("goal_target_date", self.goal_date_var.get().strip())
+        self.refresh()
+
+    def refresh(self):
+        db = self.app.db
+        c = self.app.c
+        y, m = self.app.view_year, self.app.view_month
+        cur = self.app.reporting_currency()
+
+        n_months = FORECAST_RANGE_LABELS.get(self.trend_range_var.get(), 6)
+        history = monthly_history(db, y, m, n_months=n_months)
+        cats = [label for label, _, _ in history]
+        income_series = [i for _, i, _ in history]
+        expense_series = [e for _, _, e in history]
+        charts.draw_bar_chart(
+            self.trend_canvas, cats,
+            [("Income", "good", income_series), ("Expenses", "bad", expense_series)],
+            c, unit_fmt=lambda v: fmt_money(v, cur))
+
+        for w in self.run_rate_frame.winfo_children():
+            w.destroy()
+        run_rate = [r for r in budget_run_rate(db, y, m, today=self.app.today) if r["budget"] > 0]
+        if not run_rate:
+            ttk.Label(self.run_rate_frame, text="No budgeted categories yet.",
+                      style="CardDim.TLabel").pack(anchor="w")
+        for r in run_rate:
+            row = ttk.Frame(self.run_rate_frame, style="Card.TFrame")
+            row.pack(fill="x", pady=2)
+            style = "Bad.TLabel" if r["projected_over"] else "CardDim.TLabel"
+            over_text = f" (over by {fmt_money(r['projected'] - r['budget'], cur)})" if r["projected_over"] else ""
+            ttk.Label(row, text=f"{r['category']['name']}: on pace for {fmt_money(r['projected'], cur)} "
+                                 f"of {fmt_money(r['budget'], cur)}{over_text}",
+                      style=style).pack(anchor="w")
+
+        spend_by_cat = {}
+        for t in db.transactions_in_month(y, m):
+            if t["amount"] < 0 and t["category_id"] is not None:
+                spend_by_cat[t["category_id"]] = spend_by_cat.get(t["category_id"], 0.0) - db.to_reporting(
+                    t["amount"], t["currency"])
+        spend_categories = [cat for cat in db.list_categories() if cat["kind"] in ("need", "want", "saving")]
+        actual_segments = [
+            (cat["name"], spend_by_cat.get(cat["id"], 0.0), CATEGORY_CHART_COLORS[i % len(CATEGORY_CHART_COLORS)])
+            for i, cat in enumerate(spend_categories) if spend_by_cat.get(cat["id"], 0.0) > 0
+        ]
+        budgeted_segments = [
+            (cat["name"], cat["monthly_budget"] or 0.0,
+             CATEGORY_CHART_COLORS[i % len(CATEGORY_CHART_COLORS)])
+            for i, cat in enumerate(spend_categories) if (cat["monthly_budget"] or 0.0) > 0
+        ]
+        total_actual = sum(v for _, v, _ in actual_segments)
+        total_budgeted = sum(v for _, v, _ in budgeted_segments)
+        charts.draw_donut_chart(self.actual_donut_canvas, actual_segments, c,
+                                 center_label=fmt_money(total_actual, cur), center_sub="actual")
+        charts.draw_donut_chart(self.budgeted_donut_canvas, budgeted_segments, c,
+                                 center_label=fmt_money(total_budgeted, cur), center_sub="budgeted")
+
+        saved_amount = db.get_setting_float("goal_target_amount", 0.0)
+        saved_date = db.get_setting("goal_target_date", "")
+        if saved_amount:
+            self.goal_amount_var.set(str(saved_amount))
+        if saved_date:
+            self.goal_date_var.set(saved_date)
+        if saved_amount and saved_date:
+            try:
+                result = goal_projection(db, saved_amount, saved_date, today=self.app.today)
+            except ValueError:
+                self.goal_result_label.config(text="Saved target date isn't valid — re-enter it above.")
+            else:
+                if result["on_track"]:
+                    status = ("Goal already reached." if result["remaining"] <= 0 else
+                               f"On track — averaging {fmt_money(result['avg_monthly_savings'], cur)}/mo "
+                               f"against {fmt_money(result['monthly_needed'], cur)}/mo needed.")
+                else:
+                    needed_text = (f"{fmt_money(result['monthly_needed'], cur)}/mo needed"
+                                   if result["monthly_needed"] is not None else "target date has passed")
+                    status = (f"Not on track — averaging {fmt_money(result['avg_monthly_savings'], cur)}/mo "
+                              f"against {needed_text}.")
+                self.goal_result_label.config(
+                    text=f"Current: {fmt_money(result['current'], cur)}  ·  "
+                         f"Remaining: {fmt_money(result['remaining'], cur)}  ·  "
+                         f"{result['months_left']} month(s) left. {status}")
+        else:
+            self.goal_result_label.config(text="Set a target amount and date to see a projection.")
 
 
 # --------------------------------------------------------------------------

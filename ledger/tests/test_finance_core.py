@@ -13,7 +13,8 @@ from finance_core import (
     export_categories_editable_csv, export_investments_editable_csv,
     apply_transactions_csv, apply_accounts_csv, apply_categories_csv, apply_investments_csv,
     refresh_profile_csvs, apply_profile_csvs, month_bounds, custom_month_for_date,
-    safe_to_spend, would_exceed_budget, upcoming_bills,
+    safe_to_spend, would_exceed_budget, upcoming_bills, whatif_category_adjustment,
+    goal_projection,
 )
 
 TX_CSV_FIELDS = ["id", "date", "payee", "category", "amount", "currency", "note", "account",
@@ -1019,6 +1020,109 @@ def test_budget_run_rate_flags_projected_overspend(tmp_path):
     assert row["projected"] == pytest.approx(450.0)  # 150/10*30
     assert row["projected_over"] is True
 
+    db.close()
+
+
+def test_whatif_category_adjustment_projects_a_lower_expense_and_higher_savings_rate(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_transaction("2026-09-01", "Employer", None, 2000.0, "GBP", account_id=acc_id)
+    db.add_transaction("2026-09-05", "Dining", None, -400.0, "GBP", account_id=acc_id)
+
+    result = whatif_category_adjustment(db, 2026, 9, category_kind="want", delta_amount=-150.0)
+
+    assert result["income"] == pytest.approx(2000.0)
+    assert result["current_expenses"] == pytest.approx(400.0)
+    assert result["new_expenses"] == pytest.approx(250.0)
+    assert result["current_savings_rate"] == pytest.approx((2000 - 400) / 2000)
+    assert result["new_savings_rate"] == pytest.approx((2000 - 250) / 2000)
+    assert result["new_savings_rate"] > result["current_savings_rate"]
+    db.close()
+
+
+def test_whatif_category_adjustment_never_projects_negative_expenses(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_transaction("2026-09-01", "Employer", None, 1000.0, "GBP", account_id=acc_id)
+    db.add_transaction("2026-09-05", "Dining", None, -50.0, "GBP", account_id=acc_id)
+
+    result = whatif_category_adjustment(db, 2026, 9, category_kind="want", delta_amount=-500.0)
+
+    assert result["new_expenses"] == pytest.approx(0.0)
+    db.close()
+
+
+def test_whatif_category_adjustment_saving_kind_moves_the_savings_bucket_too(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_category("Whatif Saving Cat", "saving", 0)
+    saving_id = next(c["id"] for c in db.list_categories() if c["name"] == "Whatif Saving Cat")
+    db.add_transaction("2026-09-01", "Employer", None, 2000.0, "GBP", account_id=acc_id)
+    db.add_transaction("2026-09-05", "ISA", saving_id, -300.0, "GBP", account_id=acc_id)
+
+    result = whatif_category_adjustment(db, 2026, 9, category_kind="saving", delta_amount=200.0)
+
+    # More saving-category spend increases expenses but the explicit savings
+    # bucket rises too, so the reported rate uses max(income-expenses, savings)
+    # -- confirms the saving-kind branch actually engages, not just expenses.
+    assert result["new_expenses"] == pytest.approx(500.0)
+    assert result["new_savings_rate"] == pytest.approx((2000 - 500) / 2000)
+    db.close()
+
+
+def test_goal_projection_reports_on_track_when_average_savings_meet_the_pace_needed(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Savings", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    for month in (4, 5, 6, 7, 8, 9):
+        db.add_transaction(f"2026-{month:02d}-01", "Employer", None, 2000.0, "GBP", account_id=acc_id)
+        db.add_transaction(f"2026-{month:02d}-15", "Rent", None, -1000.0, "GBP", account_id=acc_id)
+    # Current net worth is whatever the transaction history left the balance
+    # at (6000, incidentally) -- pin it explicitly so this test's "current"
+    # figure doesn't silently depend on that coincidence.
+    db.update_account_balance(acc_id, 6000.0)
+
+    # Net worth is 6000, target 12000 by 2027-03 (6 months out) -> needs
+    # 1000/mo; actual average is 1000/mo (2000 income - 1000 expenses).
+    result = goal_projection(db, target_amount=12000.0, target_date="2027-03-01",
+                              today=datetime.date(2026, 9, 15))
+
+    assert result["current"] == pytest.approx(6000.0)
+    assert result["remaining"] == pytest.approx(6000.0)
+    assert result["months_left"] == 6
+    assert result["monthly_needed"] == pytest.approx(1000.0)
+    assert result["avg_monthly_savings"] == pytest.approx(1000.0)
+    assert result["on_track"] is True
+    db.close()
+
+
+def test_goal_projection_reports_not_on_track_when_short_of_the_pace_needed(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Savings", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_transaction("2026-09-01", "Employer", None, 1500.0, "GBP", account_id=acc_id)
+    db.add_transaction("2026-09-15", "Rent", None, -1400.0, "GBP", account_id=acc_id)  # only 100/mo saved
+
+    result = goal_projection(db, target_amount=12000.0, target_date="2027-03-01",
+                              today=datetime.date(2026, 9, 15))
+
+    assert result["on_track"] is False
+    db.close()
+
+
+def test_goal_projection_already_met_reports_on_track_with_nothing_needed(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Savings", "asset", 20000.0, currency="GBP")
+
+    result = goal_projection(db, target_amount=12000.0, target_date="2027-03-01",
+                              today=datetime.date(2026, 9, 15))
+
+    assert result["remaining"] == 0.0
+    assert result["monthly_needed"] == 0.0
+    assert result["on_track"] is True
     db.close()
 
 

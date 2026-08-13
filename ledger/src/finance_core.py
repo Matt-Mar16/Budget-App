@@ -3033,6 +3033,60 @@ def budget_run_rate(db: Database, year, month, today: Optional[datetime.date] = 
     return out
 
 
+def whatif_category_adjustment(db: Database, year, month, category_kind, delta_amount):
+    """Projects this reporting period's savings rate if spend in a category
+    of the given kind changed by delta_amount (negative = spend less,
+    positive = spend more), holding everything else constant. Purely
+    computational -- reads current totals and never writes anything, for
+    the Forecast tab's "what if" tool. `category_kind` (not a specific
+    category) is enough to know whether the adjustment should also move
+    the explicit saving-category total savings_rate() falls back to."""
+    income, expenses, savings = monthly_totals(db, year, month)
+    new_expenses = max(0.0, expenses + delta_amount)
+    new_savings = max(0.0, savings + delta_amount) if category_kind == "saving" else savings
+
+    def rate(exp, sav):
+        if income <= 0:
+            return None
+        return max(income - exp, sav) / income
+
+    return {
+        "income": income,
+        "current_expenses": expenses,
+        "new_expenses": new_expenses,
+        "current_savings_rate": rate(expenses, savings),
+        "new_savings_rate": rate(new_expenses, new_savings),
+    }
+
+
+def goal_projection(db: Database, target_amount, target_date, today: Optional[datetime.date] = None):
+    """Projects whether a net-worth target is reachable by target_date
+    (an ISO date string), based on the average monthly (income - expenses)
+    over the last 6 calendar months. Returns None for monthly_needed if
+    the target date has already passed with the target unmet."""
+    today = today or datetime.date.today()
+    current = net_worth(db)
+    remaining = target_amount - current
+    target = datetime.date.fromisoformat(target_date)
+    months_left = max(0, (target.year - today.year) * 12 + (target.month - today.month))
+
+    history = monthly_history(db, today.year, today.month, n_months=6)
+    monthly_savings = [income - expenses for _, income, expenses in history]
+    avg_monthly_savings = sum(monthly_savings) / len(monthly_savings) if monthly_savings else 0.0
+
+    if remaining <= 0:
+        return {"current": current, "remaining": 0.0, "months_left": months_left,
+                "avg_monthly_savings": avg_monthly_savings, "monthly_needed": 0.0, "on_track": True}
+
+    monthly_needed = remaining / months_left if months_left > 0 else None
+    on_track = monthly_needed is not None and avg_monthly_savings >= monthly_needed
+    return {
+        "current": current, "remaining": remaining, "months_left": months_left,
+        "avg_monthly_savings": avg_monthly_savings, "monthly_needed": monthly_needed,
+        "on_track": on_track,
+    }
+
+
 def categories_over_threshold(db: Database, year, month, threshold_pct=None):
     """Categories whose spend-so-far this month has crossed threshold_pct
     of their monthly_budget (default from the budget_alert_threshold_pct
