@@ -369,6 +369,7 @@ NAV_GROUPS = [
     ("Planning", [
         ("recurring", "🔁", "Recurring"),
         ("debt", "📉", "Debt Planner"),
+        ("accounts", "🏦", "Accounts"),
         ("networth", "📈", "Net Worth / FI"),
         ("investments", "📊", "Investments"),
         ("tax", "🧮", "Tax"),
@@ -526,6 +527,7 @@ class App(tk.Tk):
             "budgets": BudgetsTab(self.container, self),
             "recurring": RecurringTab(self.container, self),
             "debt": DebtPlannerTab(self.container, self),
+            "accounts": AccountsTab(self.container, self),
             "networth": NetWorthTab(self.container, self),
             "investments": InvestmentsTab(self.container, self),
             "tax": TaxTab(self.container, self),
@@ -2285,7 +2287,7 @@ ACCOUNT_TYPE_BY_LABEL = {label: (subtype, kind) for label, subtype, kind in ACCO
 ACCOUNT_TYPE_BY_SUBTYPE_KIND = {(subtype, kind): label for label, subtype, kind in ACCOUNT_TYPE_OPTIONS}
 
 
-class NetWorthTab(ScrollableTab):
+class AccountsTab(ScrollableTab):
     def __init__(self, parent, app: App):
         super().__init__(parent, app)
         self.app = app
@@ -2399,59 +2401,12 @@ class NetWorthTab(ScrollableTab):
         ttk.Button(transfers_card, text="Delete Transfer", command=self.delete_selected_transfer).pack(
             anchor="w", pady=(8, 0))
 
-        summary_row = ttk.Frame(self)
-        summary_row.pack(fill="x", pady=(0, 10))
-        summary_row.columnconfigure(0, weight=2)
-        summary_row.columnconfigure(1, weight=1)
-
-        summary = Card(summary_row, title="Net Worth")
-        summary.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
-        self.nw_label = ttk.Label(summary, style="Hero.TLabel")
-        self.nw_label.pack(anchor="w")
-        self.fi_label = ttk.Label(summary, style="CardDim.TLabel", wraplength=420, justify="left")
-        self.fi_label.pack(anchor="w", pady=(4, 8))
-        ttk.Button(summary, text="Record Net Worth Snapshot (today)", style="Accent.TButton",
-                   command=self.record_snapshot).pack(anchor="w")
-
-        ring_card = Card(summary_row, title="FI Progress")
-        ring_card.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
-        c = self.app.c
-        self.fi_ring = tk.Canvas(ring_card, height=140, highlightthickness=0, bg=c["card"])
-        self.fi_ring.pack(fill="both", expand=True)
-
         cc_row = ttk.Frame(self)
         cc_row.pack(fill="x", pady=(0, 10))
         self.cc_card = Card(cc_row, title="Credit Cards — Utilization")
         self.cc_card.pack(fill="x")
         self.cc_inner = ttk.Frame(self.cc_card, style="Card.TFrame")
         self.cc_inner.pack(fill="x")
-
-        inv_row = ttk.Frame(self)
-        inv_row.pack(fill="x", pady=(0, 10))
-        self.inv_card = Card(inv_row, title="Investments")
-        self.inv_card.pack(fill="x")
-        self.inv_inner = ttk.Frame(self.inv_card, style="Card.TFrame")
-        self.inv_inner.pack(fill="x")
-
-        charts_row = ttk.Frame(self)
-        charts_row.pack(fill="both", expand=True)
-        charts_row.columnconfigure(0, weight=1)
-        charts_row.columnconfigure(1, weight=1)
-
-        breakdown_card = Card(charts_row, title="Net Worth by Type")
-        breakdown_card.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
-        self.breakdown_canvas = tk.Canvas(breakdown_card, height=200, highlightthickness=0, bg=c["card"])
-        self.breakdown_canvas.pack(fill="both", expand=True)
-
-        trend_card = Card(charts_row, title="Net Worth Over Time")
-        trend_card.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
-        self.trend_canvas = tk.Canvas(trend_card, height=200, highlightthickness=0, bg=c["card"])
-        self.trend_canvas.pack(fill="both", expand=True)
-
-        projection_card = Card(self, title="Investment Growth Projection (illustrative, 10 years)")
-        projection_card.pack(fill="both", expand=True, pady=(10, 0))
-        self.projection_canvas = tk.Canvas(projection_card, height=170, highlightthickness=0, bg=c["card"])
-        self.projection_canvas.pack(fill="both", expand=True)
 
     def _update_extra_fields(self):
         subtype, _ = ACCOUNT_TYPE_BY_LABEL[self.acc_type.get()]
@@ -2844,26 +2799,6 @@ class NetWorthTab(ScrollableTab):
         tree.bind("<Double-1>", on_double_click)
         refresh_ledger_rows()
 
-    def record_snapshot(self):
-        nw = net_worth(self.app.db)
-        self.app.db.record_networth_snapshot(self.app.today.isoformat(), nw)
-        self.refresh()
-
-    def _ask_amount(self, title, prompt):
-        return simpledialog.askfloat(title, prompt, parent=self)
-
-    def _add_contribution(self, account_id):
-        amt = self._ask_amount("Add Contribution", "How much are you adding?")
-        if amt:
-            self.app.db.add_investment_contribution(account_id, amt)
-            self.app.refresh_all()
-
-    def _update_value(self, account_id, current_balance):
-        val = self._ask_amount("Update Market Value", "New current value of this account:")
-        if val is not None:
-            self.app.db.update_investment_value(account_id, val)
-            self.app.refresh_all()
-
     def _edit_cashback(self, account_id):
         acc = self.app.db.get_account(account_id)
         if not acc:
@@ -2932,28 +2867,6 @@ class NetWorthTab(ScrollableTab):
             self.app.db.update_account_details(account_id, due_day=day)
             self.app.refresh_all()
 
-    def _set_projection_assumptions(self, account_id):
-        rate = simpledialog.askfloat("Expected Annual Return %", "Assumed annual return, e.g. 5 for 5%:",
-                                      parent=self, minvalue=-50, maxvalue=100)
-        if rate is None:
-            return
-        contrib = simpledialog.askfloat("Planned Monthly Contribution",
-                                         "How much do you plan to add each month?",
-                                         parent=self, minvalue=0)
-        if contrib is None:
-            contrib = 0.0
-        volatility = simpledialog.askfloat(
-            "Return Volatility %",
-            "Assumed annual volatility (stdev of returns), e.g. 15 for a typical equity fund. "
-            "Used to draw a low/high illustrative range around the projection, not just a single line:",
-            parent=self, minvalue=0, maxvalue=100)
-        if volatility is None:
-            volatility = 0.0
-        self.app.db.update_account_details(account_id, expected_return_pct=rate,
-                                            monthly_contribution=contrib,
-                                            return_volatility_pct=volatility)
-        self.app.refresh_all()
-
     def refresh(self):
         if self.app.currency_mode() == "holiday":
             self.currency_label.grid()
@@ -2985,22 +2898,6 @@ class NetWorthTab(ScrollableTab):
 
         c = self.app.c
         cur = self.app.reporting_currency()
-        nw = net_worth(self.app.db)
-        self.nw_label.config(text=fmt_money(nw, cur))
-
-        y, m = self.app.view_year, self.app.view_month
-        _, expenses, _ = monthly_totals(self.app.db, y, m)
-        annual_expenses = expenses * 12
-        if annual_expenses > 0:
-            fi = fi_number(self.app.db, annual_expenses)
-            progress = (nw / fi) if fi > 0 else 0
-            self.fi_label.config(
-                text=f"FI Number (25x this month's annualized expenses): {fmt_money(fi, cur)} "
-                     f"— you're at {progress*100:,.1f}% of it")
-            charts.draw_progress_ring(self.fi_ring, progress, c, label="of FI number")
-        else:
-            self.fi_label.config(text="Log some expenses this month to estimate your FI number.")
-            charts.draw_progress_ring(self.fi_ring, 0, c, label="of FI number")
 
         # credit cards
         for w in self.cc_inner.winfo_children():
@@ -3048,12 +2945,134 @@ class NetWorthTab(ScrollableTab):
                                command=lambda aid=a["id"]: self._set_cashback_auto_invest(aid)).pack(
                         side="left", padx=8)
 
+
+# --------------------------------------------------------------------------
+# Net Worth / FI overview — totals, charts, investments summary
+# --------------------------------------------------------------------------
+
+class NetWorthTab(ScrollableTab):
+    def __init__(self, parent, app: App):
+        super().__init__(parent, app)
+        self.app = app
+        self._build()
+
+    def _build(self):
+        c = self.app.c
+        summary_row = ttk.Frame(self)
+        summary_row.pack(fill="x", pady=(0, 10))
+        summary_row.columnconfigure(0, weight=2)
+        summary_row.columnconfigure(1, weight=1)
+
+        summary = Card(summary_row, title="Net Worth")
+        summary.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        self.nw_label = ttk.Label(summary, style="Hero.TLabel")
+        self.nw_label.pack(anchor="w")
+        self.fi_label = ttk.Label(summary, style="CardDim.TLabel", wraplength=420, justify="left")
+        self.fi_label.pack(anchor="w", pady=(4, 8))
+        ttk.Button(summary, text="Record Net Worth Snapshot (today)", style="Accent.TButton",
+                   command=self.record_snapshot).pack(anchor="w")
+
+        ring_card = Card(summary_row, title="FI Progress")
+        ring_card.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        self.fi_ring = tk.Canvas(ring_card, height=140, highlightthickness=0, bg=c["card"])
+        self.fi_ring.pack(fill="both", expand=True)
+
+        inv_row = ttk.Frame(self)
+        inv_row.pack(fill="x", pady=(0, 10))
+        self.inv_card = Card(inv_row, title="Investments")
+        self.inv_card.pack(fill="x")
+        self.inv_inner = ttk.Frame(self.inv_card, style="Card.TFrame")
+        self.inv_inner.pack(fill="x")
+
+        charts_row = ttk.Frame(self)
+        charts_row.pack(fill="both", expand=True)
+        charts_row.columnconfigure(0, weight=1)
+        charts_row.columnconfigure(1, weight=1)
+
+        breakdown_card = Card(charts_row, title="Net Worth by Type")
+        breakdown_card.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        self.breakdown_canvas = tk.Canvas(breakdown_card, height=200, highlightthickness=0, bg=c["card"])
+        self.breakdown_canvas.pack(fill="both", expand=True)
+
+        trend_card = Card(charts_row, title="Net Worth Over Time")
+        trend_card.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        self.trend_canvas = tk.Canvas(trend_card, height=200, highlightthickness=0, bg=c["card"])
+        self.trend_canvas.pack(fill="both", expand=True)
+
+        projection_card = Card(self, title="Investment Growth Projection (illustrative, 10 years)")
+        projection_card.pack(fill="both", expand=True, pady=(10, 0))
+        self.projection_canvas = tk.Canvas(projection_card, height=170, highlightthickness=0, bg=c["card"])
+        self.projection_canvas.pack(fill="both", expand=True)
+
+    def record_snapshot(self):
+        nw = net_worth(self.app.db)
+        self.app.db.record_networth_snapshot(self.app.today.isoformat(), nw)
+        self.refresh()
+
+    def _ask_amount(self, title, prompt):
+        return simpledialog.askfloat(title, prompt, parent=self)
+
+    def _add_contribution(self, account_id):
+        amt = self._ask_amount("Add Contribution", "How much are you adding?")
+        if amt:
+            self.app.db.add_investment_contribution(account_id, amt)
+            self.app.refresh_all()
+
+    def _update_value(self, account_id, current_balance):
+        val = self._ask_amount("Update Market Value", "New current value of this account:")
+        if val is not None:
+            self.app.db.update_investment_value(account_id, val)
+            self.app.refresh_all()
+
+    def _set_projection_assumptions(self, account_id):
+        rate = simpledialog.askfloat("Expected Annual Return %", "Assumed annual return, e.g. 5 for 5%:",
+                                      parent=self, minvalue=-50, maxvalue=100)
+        if rate is None:
+            return
+        contrib = simpledialog.askfloat("Planned Monthly Contribution",
+                                         "How much do you plan to add each month?",
+                                         parent=self, minvalue=0)
+        if contrib is None:
+            contrib = 0.0
+        volatility = simpledialog.askfloat(
+            "Return Volatility %",
+            "Assumed annual volatility (stdev of returns), e.g. 15 for a typical equity fund. "
+            "Used to draw a low/high illustrative range around the projection, not just a single line:",
+            parent=self, minvalue=0, maxvalue=100)
+        if volatility is None:
+            volatility = 0.0
+        self.app.db.update_account_details(account_id, expected_return_pct=rate,
+                                            monthly_contribution=contrib,
+                                            return_volatility_pct=volatility)
+        self.app.refresh_all()
+
+    def refresh(self):
+        c = self.app.c
+        cur = self.app.reporting_currency()
+        nw = net_worth(self.app.db)
+        self.nw_label.config(text=fmt_money(nw, cur))
+
+        y, m = self.app.view_year, self.app.view_month
+        _, expenses, _ = monthly_totals(self.app.db, y, m)
+        annual_expenses = expenses * 12
+        if annual_expenses > 0:
+            fi = fi_number(self.app.db, annual_expenses)
+            progress = (nw / fi) if fi > 0 else 0
+            self.fi_label.config(
+                text=f"FI Number (25x this month's annualized expenses): {fmt_money(fi, cur)} "
+                     f"— you're at {progress*100:,.1f}% of it")
+            charts.draw_progress_ring(self.fi_ring, progress, c, label="of FI number")
+        else:
+            self.fi_label.config(text="Log some expenses this month to estimate your FI number.")
+            charts.draw_progress_ring(self.fi_ring, 0, c, label="of FI number")
+
         # investments
         for w in self.inv_inner.winfo_children():
             w.destroy()
         invs = investment_summary(self.app.db)
         if not invs:
-            ttk.Label(self.inv_inner, text="No investment accounts yet — add one above to track growth.",
+            ttk.Label(self.inv_inner, text="No investment accounts yet — add one on the Accounts tab "
+                                            "to track growth.",
                       style="CardDim.TLabel").pack(anchor="w")
         else:
             for entry in invs:
