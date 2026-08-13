@@ -54,7 +54,7 @@ from finance_core import (
     upcoming_card_payments, investment_projection, investment_projection_with_bands,
     budget_run_rate, categories_over_threshold, top_payees, daily_spend_totals,
     detect_recurring_candidates, refresh_profile_csvs, apply_profile_csvs,
-    income_by_category,
+    income_by_category, custom_month_for_date, month_bounds,
 )
 import profiles
 import theme
@@ -390,8 +390,7 @@ class App(tk.Tk):
 
         self.db = Database(profiles.db_path_for(profile["slug"]))
         self.today = datetime.date.today()
-        self.view_year = self.today.year
-        self.view_month = self.today.month
+        self.view_year, self.view_month = custom_month_for_date(self.db, self.today)
 
         self.style = ttk.Style(self)
         mode = self.db.get_setting("theme_mode", "dark")
@@ -564,8 +563,14 @@ class App(tk.Tk):
         self._update_month_label()
 
     def _update_month_label(self):
-        self.month_label.configure(
-            text=datetime.date(self.view_year, self.view_month, 1).strftime("%B %Y"))
+        if self.db.get_setting_int("month_start_day", 1) == 1:
+            text = datetime.date(self.view_year, self.view_month, 1).strftime("%B %Y")
+        else:
+            start_str, end_str = month_bounds(self.db, self.view_year, self.view_month)
+            start_date = datetime.date.fromisoformat(start_str)
+            end_date = datetime.date.fromisoformat(end_str)
+            text = f"{start_date.strftime('%d %b')} – {end_date.strftime('%d %b %Y')}"
+        self.month_label.configure(text=text)
 
     # ---- month navigation shared by dashboard / budgets ----
     def prev_month(self):
@@ -585,7 +590,7 @@ class App(tk.Tk):
         self.refresh_all()
 
     def goto_today(self):
-        self.view_year, self.view_month = self.today.year, self.today.month
+        self.view_year, self.view_month = custom_month_for_date(self.db, self.today)
         self.refresh_all()
 
     # ---- misc app-level actions ----
