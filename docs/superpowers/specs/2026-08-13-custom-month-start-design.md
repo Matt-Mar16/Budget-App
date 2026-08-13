@@ -141,23 +141,21 @@ Test-first against `finance_core.py`. Critical cases for `month_bounds`:
 default (`month_start_day=1`) reproduces exact current calendar-month
 bounds; a mid-month start day (e.g. 25) produces the correct 25th-to-24th
 range; year rollover (e.g. `month_start_day=25`, month=1 spans
-25 Dec (prior year)–24 Jan). Day-31 edge case, resolved explicitly here to
-remove any ambiguity for the implementer: `start_date` for a given
-`(year, month)` is `date(year, month, min(month_start_day,
-_last_day_of_month(year, month).day))` — clamped into that calendar
-month exactly like `_advance_date` already clamps recurring-item dates —
-and `end_date` is one day before what the SAME clamping rule produces for
-`(year, month+1)`. E.g. `month_start_day=31`, month=Feb (28 days):
-`start_date = Feb 28`; the following month's clamped start (`Mar 31`)
-minus one day gives `end_date = Mar 30`. For `transactions_in_month`,
-`daily_spend_totals`, and `budget_run_rate`: one test each confirming
-default behavior is unchanged (regression protection — these functions
-currently have partial or no test coverage, so establishing a baseline
-before changing their internals matters), plus one test each with a
-custom `month_start_day` confirming the new range is respected. For
-`custom_month_for_date`: default behavior unchanged; a date before vs.
-on-or-after the start day resolves to the correct bucket; year-rollover
-at January.
+25 Dec (prior year)–24 Jan). `month_start_day` is itself clamped to
+`1..28` before any date math runs — same convention this codebase already
+uses for credit card `due_day`, chosen specifically so no day-of-month
+edge case (a month shorter than the configured start day) can ever arise:
+every month has at least 28 days. A test should confirm an out-of-range
+stored value (e.g. a hand-edited `31`) is defensively clamped to `28`
+rather than trusted raw. For `transactions_in_month` and `budget_run_rate`
+(the two functions this plan actually changes — `daily_spend_totals` is
+out of scope, see above): one test each confirming default behavior is
+unchanged (regression protection — these functions currently have partial
+or no test coverage, so establishing a baseline before changing their
+internals matters), plus one test each with a custom `month_start_day`
+confirming the new range is respected. For `custom_month_for_date`:
+default behavior unchanged; a date before vs. on-or-after the start day
+resolves to the correct bucket; year-rollover at January.
 
 GUI wiring (`App` init/`goto_today`/month label, `SettingsTab` field)
 verified with a headless smoke script per this project's established

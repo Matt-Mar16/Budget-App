@@ -86,12 +86,15 @@ def test_month_bounds_custom_start_day_rolls_over_the_year(tmp_path):
     db.close()
 
 
-def test_month_bounds_clamps_start_day_31_into_shorter_months(tmp_path):
+def test_month_bounds_clamps_an_out_of_range_stored_value_to_28(tmp_path):
+    # month_start_day is clamped to 1..28 (same convention this codebase
+    # already uses for credit card due_day) specifically so no day-of-month
+    # edge case ever needs handling -- every month has at least 28 days.
+    # A hand-edited/corrupted value like 31 is defensively clamped down
+    # rather than trusted raw.
     db = _db(tmp_path)
     db.set_setting("month_start_day", "31")
-    # (year=2026, month=2): start clamps to Feb 28 (2026 isn't a leap year);
-    # end is one day before March's clamped start (Mar 31) = Mar 30.
-    assert month_bounds(db, 2026, 2) == ("2026-02-28", "2026-03-30")
+    assert month_bounds(db, 2026, 2) == ("2026-02-28", "2026-03-27")
     db.close()
 
 

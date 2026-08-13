@@ -506,6 +506,12 @@ class Database:
         except (TypeError, ValueError):
             return default
 
+    def get_setting_int(self, key, default=0):
+        try:
+            return int(self.get_setting(key, default))
+        except (TypeError, ValueError):
+            return default
+
     # ---- FX ----
     def set_fx_rate(self, currency, rate):
         self.conn.execute(
@@ -1822,6 +1828,44 @@ def _last_day_of_month(year, month):
     if month == 12:
         return datetime.date(year, 12, 31)
     return datetime.date(year, month + 1, 1) - datetime.timedelta(days=1)
+
+
+def _clamped_month_start(db, year, month):
+    start_day = min(max(db.get_setting_int("month_start_day", 1), 1), 28)
+    last_day = _last_day_of_month(year, month).day
+    return datetime.date(year, month, min(start_day, last_day))
+
+
+def month_bounds(db: Database, year, month):
+    """The real calendar date range a reporting "month" (year, month)
+    spans, given the month_start_day setting (default 1 = plain calendar
+    month, byte-for-byte identical to date(year, month, 1)..last day of
+    that month). A month is labeled by the calendar month it starts in:
+    with month_start_day=25, (year, 8) spans 25 Jul-24 Aug."""
+    start_date = _clamped_month_start(db, year, month)
+    next_month = month + 1
+    next_year = year
+    if next_month > 12:
+        next_month = 1
+        next_year += 1
+    next_start = _clamped_month_start(db, next_year, next_month)
+    end_date = next_start - datetime.timedelta(days=1)
+    return start_date.isoformat(), end_date.isoformat()
+
+
+def custom_month_for_date(db: Database, a_date):
+    """Which reporting-month bucket (year, month) a real date falls into,
+    given month_start_day. Used to resolve "today" into the right bucket
+    when the app opens or "Today" is clicked."""
+    start_day = min(max(db.get_setting_int("month_start_day", 1), 1), 28)
+    if a_date.day >= start_day:
+        return a_date.year, a_date.month
+    month = a_date.month - 1
+    year = a_date.year
+    if month < 1:
+        month = 12
+        year -= 1
+    return year, month
 
 
 def monthly_history(db: Database, year, month, n_months=6):

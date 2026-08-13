@@ -12,7 +12,7 @@ from finance_core import (
     export_transactions_editable_csv, export_accounts_editable_csv,
     export_categories_editable_csv, export_investments_editable_csv,
     apply_transactions_csv, apply_accounts_csv, apply_categories_csv, apply_investments_csv,
-    refresh_profile_csvs, apply_profile_csvs,
+    refresh_profile_csvs, apply_profile_csvs, month_bounds, custom_month_for_date,
 )
 
 TX_CSV_FIELDS = ["id", "date", "payee", "category", "amount", "currency", "note", "account",
@@ -96,6 +96,79 @@ def test_list_transfers_leg_id_can_be_used_to_delete_the_whole_pair(tmp_path):
     assert db.list_transfers() == []
     assert db.get_account(checking_id)["balance"] == pytest.approx(500.0)
     assert db.get_account(savings_id)["balance"] == pytest.approx(0.0)
+    db.close()
+
+
+def test_get_setting_int_returns_default_when_unset(tmp_path):
+    db = _db(tmp_path)
+    assert db.get_setting_int("month_start_day", 1) == 1
+    db.close()
+
+
+def test_get_setting_int_parses_a_stored_value(tmp_path):
+    db = _db(tmp_path)
+    db.set_setting("month_start_day", "25")
+    assert db.get_setting_int("month_start_day", 1) == 25
+    db.close()
+
+
+def test_month_bounds_defaults_to_plain_calendar_month(tmp_path):
+    db = _db(tmp_path)
+    assert month_bounds(db, 2026, 2) == ("2026-02-01", "2026-02-28")
+    assert month_bounds(db, 2024, 2) == ("2024-02-01", "2024-02-29")  # leap year
+    db.close()
+
+
+def test_month_bounds_with_a_custom_start_day(tmp_path):
+    db = _db(tmp_path)
+    db.set_setting("month_start_day", "25")
+    assert month_bounds(db, 2026, 8) == ("2026-08-25", "2026-09-24")
+    db.close()
+
+
+def test_month_bounds_custom_start_day_rolls_over_the_year(tmp_path):
+    db = _db(tmp_path)
+    db.set_setting("month_start_day", "25")
+    assert month_bounds(db, 2026, 12) == ("2026-12-25", "2027-01-24")
+    db.close()
+
+
+def test_month_bounds_clamps_an_out_of_range_stored_value_to_28(tmp_path):
+    # month_start_day is clamped to 1..28 (same convention this codebase
+    # already uses for credit card due_day) specifically so no day-of-month
+    # edge case ever needs handling -- every month has at least 28 days.
+    # A hand-edited/corrupted value like 31 is defensively clamped down
+    # rather than trusted raw.
+    db = _db(tmp_path)
+    db.set_setting("month_start_day", "31")
+    assert month_bounds(db, 2026, 2) == ("2026-02-28", "2026-03-27")
+    db.close()
+
+
+def test_custom_month_for_date_defaults_to_plain_calendar_month(tmp_path):
+    db = _db(tmp_path)
+    assert custom_month_for_date(db, datetime.date(2026, 8, 15)) == (2026, 8)
+    db.close()
+
+
+def test_custom_month_for_date_before_the_start_day_belongs_to_the_prior_month(tmp_path):
+    db = _db(tmp_path)
+    db.set_setting("month_start_day", "25")
+    assert custom_month_for_date(db, datetime.date(2026, 8, 20)) == (2026, 7)
+    db.close()
+
+
+def test_custom_month_for_date_on_or_after_the_start_day_belongs_to_that_month(tmp_path):
+    db = _db(tmp_path)
+    db.set_setting("month_start_day", "25")
+    assert custom_month_for_date(db, datetime.date(2026, 8, 25)) == (2026, 8)
+    db.close()
+
+
+def test_custom_month_for_date_rolls_the_year_back_at_january(tmp_path):
+    db = _db(tmp_path)
+    db.set_setting("month_start_day", "25")
+    assert custom_month_for_date(db, datetime.date(2026, 1, 10)) == (2025, 12)
     db.close()
 
 
