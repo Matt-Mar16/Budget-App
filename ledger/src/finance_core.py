@@ -173,6 +173,7 @@ class Database:
             next_date TEXT NOT NULL,
             active INTEGER NOT NULL DEFAULT 1,
             account_id INTEGER,
+            custom_interval_months INTEGER,
             FOREIGN KEY(category_id) REFERENCES categories(id),
             FOREIGN KEY(account_id) REFERENCES accounts(id)
         );
@@ -314,6 +315,8 @@ class Database:
         rec_cols = existing_cols("recurring")
         if "account_id" not in rec_cols:
             c.execute("ALTER TABLE recurring ADD COLUMN account_id INTEGER")
+        if "custom_interval_months" not in rec_cols:
+            c.execute("ALTER TABLE recurring ADD COLUMN custom_interval_months INTEGER")
 
         debt_cols = existing_cols("debts")
         if "custom_payment" not in debt_cols:
@@ -1488,11 +1491,12 @@ class Database:
 
     # ---- recurring transactions (bills / paychecks) ----
     def add_recurring(self, name, payee, category_id, amount, currency, frequency, next_date,
-                       account_id=None):
+                       account_id=None, custom_interval_months=None):
         self.conn.execute(
             "INSERT INTO recurring(name, payee, category_id, amount, currency, frequency, next_date, "
-            "active, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)",
-            (name, payee, category_id, amount, currency.upper(), frequency, next_date, account_id),
+            "active, account_id, custom_interval_months) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            (name, payee, category_id, amount, currency.upper(), frequency, next_date, account_id,
+             custom_interval_months),
         )
         self.conn.commit()
 
@@ -1537,7 +1541,7 @@ class Database:
             "SELECT * FROM ignored_subscriptions ORDER BY dismissed_date DESC"
         ).fetchall()
 
-    def _advance_date(self, date_str, frequency):
+    def _advance_date(self, date_str, frequency, custom_interval_months=None):
         d = datetime.date.fromisoformat(date_str)
         if frequency == "weekly":
             d += datetime.timedelta(days=7)
@@ -1546,10 +1550,11 @@ class Database:
                 d = d.replace(year=d.year + 1)
             except ValueError:  # Feb 29 -> Feb 28
                 d = d.replace(year=d.year + 1, day=28)
-        else:  # monthly
-            m = d.month + 1
-            y = d.year + (1 if m > 12 else 0)
-            m = 1 if m > 12 else m
+        else:  # monthly, or custom (every N months — e.g. rent paid 3x/year = every 4 months)
+            months_ahead = custom_interval_months if frequency == "custom" and custom_interval_months else 1
+            total = d.month - 1 + months_ahead
+            y = d.year + total // 12
+            m = total % 12 + 1
             last = _last_day_of_month(y, m)
             d = datetime.date(y, m, min(d.day, last.day))
         return d.isoformat()
@@ -1578,7 +1583,8 @@ class Database:
                     if r["amount"] < 0:
                         self._apply_roundup_nocommit(tx_id, r["next_date"], r["amount"])
                     posted.append((r["name"], r["next_date"], r["amount"]))
-                    new_next = self._advance_date(r["next_date"], r["frequency"])
+                    new_next = self._advance_date(r["next_date"], r["frequency"],
+                                                   custom_interval_months=r["custom_interval_months"])
                     self.conn.execute("UPDATE recurring SET next_date=? WHERE id=?", (new_next, r["id"]))
                     r = dict(r)
                     r["next_date"] = new_next

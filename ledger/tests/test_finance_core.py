@@ -99,6 +99,67 @@ def test_list_transfers_leg_id_can_be_used_to_delete_the_whole_pair(tmp_path):
     db.close()
 
 
+def test_advance_date_monthly_still_advances_by_exactly_one_month_and_rolls_over_years(tmp_path):
+    # Regression coverage for the shared month-rollover math this same task
+    # generalized to also support custom N-month intervals — this had no
+    # prior test, and the arithmetic changed shape (integer total-months
+    # instead of a plain +1/wrap), so lock down the pre-existing behavior.
+    db = _db(tmp_path)
+    assert db._advance_date("2026-01-15", "monthly") == "2026-02-15"
+    assert db._advance_date("2026-12-15", "monthly") == "2027-01-15"  # year rollover
+    db.close()
+
+
+def test_advance_date_with_custom_frequency_advances_by_n_months(tmp_path):
+    db = _db(tmp_path)
+    assert db._advance_date("2026-01-15", "custom", custom_interval_months=4) == "2026-05-15"
+    assert db._advance_date("2026-10-15", "custom", custom_interval_months=4) == "2027-02-15"
+    db.close()
+
+
+def test_advance_date_with_custom_frequency_clamps_day_at_month_end(tmp_path):
+    db = _db(tmp_path)
+    # Jan 31 + 1 month -> Feb has no 31st, same day-clamping the existing
+    # monthly path already does.
+    assert db._advance_date("2026-01-31", "custom", custom_interval_months=1) == "2026-02-28"
+    db.close()
+
+
+def test_advance_date_with_custom_frequency_defaults_to_one_month_if_unconfigured(tmp_path):
+    db = _db(tmp_path)
+    # A "custom" item with no interval set (e.g. hand-edited data) shouldn't crash --
+    # falls back to behaving like monthly rather than raising.
+    assert db._advance_date("2026-01-15", "custom", custom_interval_months=None) == "2026-02-15"
+    db.close()
+
+
+def test_add_recurring_stores_and_returns_custom_interval_months(tmp_path):
+    db = _db(tmp_path)
+    db.add_recurring("Rent", "Landlord", None, -500.0, "GBP", "custom", "2026-01-01",
+                      custom_interval_months=4)
+
+    item = db.list_recurring()[0]
+    assert item["frequency"] == "custom"
+    assert item["custom_interval_months"] == 4
+    db.close()
+
+
+def test_generate_due_recurring_advances_a_custom_frequency_item_by_n_months(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 2000.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_recurring("Rent", "Landlord", None, -500.0, "GBP", "custom", "2026-01-01",
+                      account_id=acc_id, custom_interval_months=4)
+
+    posted = db.generate_due_recurring(today=datetime.date(2026, 1, 5))
+
+    assert len(posted) == 1
+    item = db.list_recurring()[0]
+    assert item["next_date"] == "2026-05-01"  # 3x/year cadence: Jan -> May -> Sep
+    assert db.get_account(acc_id)["balance"] == pytest.approx(1500.0)
+    db.close()
+
+
 def test_cashback_earned_this_month_sums_only_the_current_calendar_month(tmp_path):
     db = _db(tmp_path)
     db.add_account("Card", "liability", 0.0, currency="GBP", subtype="credit_card", cashback_rate=10.0)

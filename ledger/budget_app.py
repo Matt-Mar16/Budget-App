@@ -1757,6 +1757,7 @@ class RecurringTab(ScrollableTab):
         self.currency_var = tk.StringVar(value=self.app.reporting_currency())
         self.freq_var = tk.StringVar(value="monthly")
         self.next_date_var = tk.StringVar(value=self.app.today.isoformat())
+        self.custom_interval_var = tk.StringVar(value="4")
 
         labels = ["Name", "Payee", "Category", "Amount (+/-)", "Currency", "Frequency", "Next Date", "Account"]
         for i, lbl in enumerate(labels):
@@ -1768,14 +1769,25 @@ class RecurringTab(ScrollableTab):
         self.category_combo.grid(row=1, column=2, padx=3)
         ttk.Entry(form, textvariable=self.amount_var, width=10).grid(row=1, column=3, padx=3)
         ttk.Entry(form, textvariable=self.currency_var, width=6).grid(row=1, column=4, padx=3)
-        ttk.Combobox(form, textvariable=self.freq_var, values=["weekly", "monthly", "yearly"],
-                     width=10, state="readonly").grid(row=1, column=5, padx=3)
+        freq_combo = ttk.Combobox(form, textvariable=self.freq_var,
+                                   values=["weekly", "monthly", "yearly", "custom"],
+                                   width=10, state="readonly")
+        freq_combo.grid(row=1, column=5, padx=3)
         ttk.Entry(form, textvariable=self.next_date_var, width=12).grid(row=1, column=6, padx=3)
         self.account_var = tk.StringVar()
         self.account_combo = ttk.Combobox(form, textvariable=self.account_var, width=14, state="readonly")
         self.account_combo.grid(row=1, column=7, padx=3)
         ttk.Button(form, text="Add", style="Accent.TButton", command=self.add_recurring).grid(
             row=1, column=8, padx=8)
+
+        self.custom_interval_frame = ttk.Frame(form, style="Card.TFrame")
+        self.custom_interval_frame.grid(row=2, column=0, columnspan=9, sticky="w", pady=(6, 0))
+        ttk.Label(self.custom_interval_frame, text="Every how many months (e.g. 4 = 3x/year)",
+                  style="CardDim.TLabel").pack(side="left")
+        ttk.Entry(self.custom_interval_frame, textvariable=self.custom_interval_var, width=6).pack(
+            side="left", padx=6)
+        self.custom_interval_frame.grid_remove()
+        freq_combo.bind("<<ComboboxSelected>>", lambda e: self._update_custom_interval_visibility())
 
         list_card = Card(self, title="All Recurring Items")
         list_card.pack(fill="both", expand=True, pady=(0, 10))
@@ -1801,6 +1813,12 @@ class RecurringTab(ScrollableTab):
         self.upcoming_label = ttk.Label(self.upcoming_card, text="", style="Card.TLabel", justify="left")
         self.upcoming_label.pack(anchor="w")
 
+    def _update_custom_interval_visibility(self):
+        if self.freq_var.get() == "custom":
+            self.custom_interval_frame.grid()
+        else:
+            self.custom_interval_frame.grid_remove()
+
     def add_recurring(self):
         name = self.name_var.get().strip()
         if not name:
@@ -1816,6 +1834,15 @@ class RecurringTab(ScrollableTab):
         except ValueError:
             messagebox.showerror("Invalid date", "Next date must be YYYY-MM-DD.")
             return
+        custom_interval_months = None
+        if self.freq_var.get() == "custom":
+            try:
+                custom_interval_months = int(self.custom_interval_var.get())
+                if custom_interval_months < 1:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("Invalid interval", "Enter a whole number of months (1 or more).")
+                return
         cats = {c["name"]: c["id"] for c in self.app.db.list_categories()}
         cat_id = cats.get(self.category_var.get().strip())
         currency = self.currency_var.get().strip().upper() or self.app.reporting_currency()
@@ -1823,7 +1850,7 @@ class RecurringTab(ScrollableTab):
         account_id = accounts.get(self.account_var.get().strip())
         self.app.db.add_recurring(name, self.payee_var.get().strip() or None, cat_id, amount,
                                    currency, self.freq_var.get(), self.next_date_var.get().strip(),
-                                   account_id=account_id)
+                                   account_id=account_id, custom_interval_months=custom_interval_months)
         self.name_var.set("")
         self.payee_var.set("")
         self.amount_var.set("")
@@ -1859,9 +1886,12 @@ class RecurringTab(ScrollableTab):
         for row in self.tree.get_children():
             self.tree.delete(row)
         for r in self.app.db.list_recurring():
+            freq_text = r["frequency"]
+            if r["frequency"] == "custom" and r["custom_interval_months"]:
+                freq_text = f"every {r['custom_interval_months']} mo"
             self.tree.insert("", "end", iid=str(r["id"]), values=(
                 r["name"], r["payee"] or "", r["category_name"] or "(none)",
-                f"{r['amount']:,.2f}", r["currency"], r["frequency"], r["next_date"],
+                f"{r['amount']:,.2f}", r["currency"], freq_text, r["next_date"],
                 r["account_name"] or "", "yes" if r["active"] else "no"))
 
         cur = self.app.reporting_currency()
