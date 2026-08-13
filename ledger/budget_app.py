@@ -1071,6 +1071,7 @@ class TransactionsTab(ScrollableTab):
         self.rewards_preview_label.grid(row=5, column=0, columnspan=8, sticky="w")
         self.amount_var.trace_add("write", lambda *a: self._update_previews())
         self.account_var.trace_add("write", lambda *a: self._update_previews())
+        self.amount_var.trace_add("write", lambda *a: self._update_category_choices())
 
         list_card = Card(self, title="History")
         list_card.pack(fill="both", expand=True)
@@ -1280,10 +1281,34 @@ class TransactionsTab(ScrollableTab):
                     preview_bits.append(f"+{fmt_money(roundup, self.app.reporting_currency())} round-up")
         self.rewards_preview_label.config(text="  ·  ".join(preview_bits))
 
+    def _update_category_choices(self, *_):
+        """Filters the Add-transaction Category dropdown to income categories
+        when the typed amount is positive, and to need/want/saving categories
+        otherwise -- so a paycheck can't accidentally get filed as an expense
+        category or vice versa. Leaves the full list shown while the amount
+        field is blank/unparseable (sign not yet known)."""
+        cats = getattr(self, "_categories", None)
+        if not cats:
+            return
+        amount_raw = self.amount_var.get().strip()
+        try:
+            amount = float(amount_raw)
+        except ValueError:
+            names = [c["name"] for c in cats]
+        else:
+            if amount > 0:
+                names = [c["name"] for c in cats if c["kind"] == "income"]
+            else:
+                names = [c["name"] for c in cats if c["kind"] != "income"]
+        self.category_combo["values"] = names
+        if self.category_var.get() not in names:
+            self.category_var.set("")
+
     def refresh(self):
         cats = self.app.db.list_categories()
+        self._categories = cats
         self.categories_by_name = {c["name"]: c["id"] for c in cats}
-        self.category_combo["values"] = list(self.categories_by_name.keys())
+        self._update_category_choices()
 
         accs = [a for a in self.app.db.list_accounts() if a["subtype"] != "roundup_pot"]
         self.accounts_by_name = {a["name"]: a for a in accs}
@@ -3576,8 +3601,10 @@ class SettingsTab(ScrollableTab):
         ttk.Label(ignored_subs_card,
                   text="Dismissed from the Recurring tab's Detected Subscriptions list.",
                   style="CardDim.TLabel").pack(anchor="w")
-        self.ignored_subs_frame = ttk.Frame(ignored_subs_card, style="Card.TFrame")
-        self.ignored_subs_frame.pack(fill="x", pady=(6, 0))
+        self.ignored_subs_count_label = ttk.Label(ignored_subs_card, text="", style="Card.TLabel")
+        self.ignored_subs_count_label.pack(anchor="w", pady=(6, 0))
+        ttk.Button(ignored_subs_card, text="Manage Ignored Subscriptions…",
+                   command=self.open_ignored_subscriptions_window).pack(anchor="w", pady=(6, 0))
 
         profile_card = Card(self, title="Profile")
         profile_card._settings_role = "profile_card"
@@ -3775,19 +3802,9 @@ class SettingsTab(ScrollableTab):
 
         self.signed_in_label.config(text=f"Signed in as: {self.app.profile['name']}")
 
-        for w in self.ignored_subs_frame.winfo_children():
-            w.destroy()
-        ignored = db.list_ignored_subscriptions()
-        if not ignored:
-            ttk.Label(self.ignored_subs_frame, text="None ignored.",
-                      style="CardDim.TLabel").pack(anchor="w")
-        for row in ignored:
-            r = ttk.Frame(self.ignored_subs_frame, style="Card.TFrame")
-            r.pack(fill="x", pady=2)
-            ttk.Label(r, text=f"{row['payee']} (dismissed {row['dismissed_date']})",
-                      style="Card.TLabel").pack(side="left")
-            ttk.Button(r, text="Un-ignore",
-                       command=lambda p=row["payee"]: self._unignore_subscription(p)).pack(side="right")
+        ignored_count = len(db.list_ignored_subscriptions())
+        self.ignored_subs_count_label.config(
+            text="None ignored." if not ignored_count else f"{ignored_count} ignored.")
 
         if self.app.currency_mode() == "holiday":
             if not self._fx_visible:
@@ -3804,9 +3821,41 @@ class SettingsTab(ScrollableTab):
             self.fx_list.insert("end", f"{code}: 1 {code} = {rate} {self.reporting_currency_var.get()}\n")
         self.fx_list.config(state="disabled")
 
-    def _unignore_subscription(self, payee):
-        self.app.db.remove_ignored_subscription(payee)
-        self.app.refresh_all()
+    def open_ignored_subscriptions_window(self):
+        win = tk.Toplevel(self)
+        win.title("Ignored Subscriptions")
+        win.configure(bg=self.app.c["bg"])
+        win.geometry("440x380")
+
+        ttk.Label(win, wraplength=400, justify="left", style="TLabel",
+                  text="Dismissed from the Recurring tab's Detected Subscriptions list. "
+                       "Deleting one here permanently forgets the dismissal — it can resurface "
+                       "as a suggestion again next time it's detected."
+                  ).pack(anchor="w", padx=14, pady=(14, 8))
+
+        list_frame = ttk.Frame(win)
+        list_frame.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+
+        def render():
+            for w in list_frame.winfo_children():
+                w.destroy()
+            ignored = self.app.db.list_ignored_subscriptions()
+            if not ignored:
+                ttk.Label(list_frame, text="None ignored.", style="TLabel").pack(anchor="w")
+            for row in ignored:
+                r = ttk.Frame(list_frame)
+                r.pack(fill="x", pady=2)
+                ttk.Label(r, text=f"{row['payee']} (dismissed {row['dismissed_date']})",
+                          style="TLabel").pack(side="left")
+                ttk.Button(r, text="Delete Permanently",
+                           command=lambda p=row["payee"]: do_delete(p)).pack(side="right")
+
+        def do_delete(payee):
+            self.app.db.remove_ignored_subscription(payee)
+            self.app.refresh_all()
+            render()
+
+        render()
 
     def _after_fx_widget(self):
         """The widget immediately after the FX card's usual slot, so
