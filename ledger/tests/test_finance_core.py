@@ -619,6 +619,53 @@ def test_update_transaction_respects_the_monthly_cashback_cap(tmp_path):
     db.close()
 
 
+def test_update_transaction_accepts_a_manual_cashback_override(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Card", "liability", 0.0, currency="GBP", subtype="credit_card",
+                    cashback_rate=10.0)
+    acc_id = db.list_accounts()[0]["id"]
+    tx_id = db.add_transaction("2026-08-01", "Shop", None, -30.0, "GBP", account_id=acc_id)
+    assert db.conn.execute(
+        "SELECT cashback FROM transactions WHERE id=?", (tx_id,)).fetchone()["cashback"] == pytest.approx(3.0)
+
+    db.update_transaction(tx_id, cashback=7.5)
+
+    actual = db.conn.execute("SELECT cashback FROM transactions WHERE id=?", (tx_id,)).fetchone()["cashback"]
+    assert actual == pytest.approx(7.5)
+    db.close()
+
+
+def test_update_transaction_manual_cashback_override_ignores_the_monthly_cap(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Card", "liability", 0.0, currency="GBP", subtype="credit_card",
+                    cashback_rate=10.0)
+    acc_id = db.list_accounts()[0]["id"]
+    db.update_account_details(acc_id, cashback_monthly_cap=5.0)
+    tx_id = db.add_transaction("2026-08-01", "Shop", None, -30.0, "GBP", account_id=acc_id)  # £3.00, within cap
+
+    # A manual override is a deliberate correction (e.g. matching what the
+    # card issuer actually paid out) -- it must not be silently re-clamped.
+    db.update_transaction(tx_id, cashback=50.0)
+
+    actual = db.conn.execute("SELECT cashback FROM transactions WHERE id=?", (tx_id,)).fetchone()["cashback"]
+    assert actual == pytest.approx(50.0)
+    db.close()
+
+
+def test_update_transaction_without_cashback_arg_still_auto_recomputes(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Card", "liability", 0.0, currency="GBP", subtype="credit_card",
+                    cashback_rate=10.0)
+    acc_id = db.list_accounts()[0]["id"]
+    tx_id = db.add_transaction("2026-08-01", "Shop", None, -30.0, "GBP", account_id=acc_id)  # £3.00
+
+    db.update_transaction(tx_id, amount=-50.0)  # cashback param omitted -- normal auto-recompute path
+
+    actual = db.conn.execute("SELECT cashback FROM transactions WHERE id=?", (tx_id,)).fetchone()["cashback"]
+    assert actual == pytest.approx(5.0)  # 10% of 50, unchanged auto-calc behavior
+    db.close()
+
+
 def test_update_account_details_can_set_cashback_monthly_cap(tmp_path):
     db = _db(tmp_path)
     db.add_account("Card", "liability", 0.0, currency="GBP", subtype="credit_card", cashback_rate=5.0)

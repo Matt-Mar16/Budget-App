@@ -836,12 +836,19 @@ class Database:
         return total
 
     def update_transaction(self, tx_id, date=None, payee=None, category_id=None, amount=None,
-                            currency=None, note=None, account_id=None, force_unreconciled=False):
+                            currency=None, note=None, account_id=None, cashback=None,
+                            force_unreconciled=False):
         """Edits a transaction in place: reverses whatever balance/round-up
         effect the OLD values had, applies the fields being changed, then
         re-applies the effect for the NEW values — all in one atomic
         transaction, so the account balance never reflects a half-applied
         edit. Any field left as None keeps its current value.
+
+        `cashback`, if given explicitly, overrides the normal rate/cap
+        auto-calculation entirely and is used as-is (not clamped against the
+        monthly cap) — for correcting cashback by hand against what a card
+        issuer actually paid out, which the auto-calc can't always predict
+        exactly. Leave it None to keep the normal auto-calculated behavior.
 
         Refuses to edit a reconciled transaction unless force_unreconciled
         is True (same contract as delete_transaction), and refuses to edit
@@ -889,29 +896,33 @@ class Database:
                                    (jar["balance"] - reverse_total, jar["id"]))
                 self.conn.execute("DELETE FROM roundups WHERE transaction_id=?", (tx_id,))
 
-            # Recompute cashback against the (possibly new) account/amount.
+            # Recompute cashback against the (possibly new) account/amount --
+            # unless the caller passed an explicit manual override.
             new_acc = self.get_account(new_account_id) if new_account_id else None
-            cashback = 0.0
-            if new_acc and new_amount < 0 and new_acc["subtype"] == "credit_card" \
-                    and (new_acc["cashback_rate"] or 0) > 0:
-                cashback = round(abs(new_amount) * new_acc["cashback_rate"] / 100.0, 2)
-                cap = new_acc["cashback_monthly_cap"] or 0
-                if cap > 0:
-                    earned_so_far = self.cashback_earned_this_month(new_account_id, new_date)
-                    # The OLD row (with its OLD cashback) is still in the table at this
-                    # point — exclude its own prior contribution from the baseline if it
-                    # would otherwise be double-counted (same account, same month), since
-                    # it's about to be replaced by the value we're computing now, not
-                    # added on top of it.
-                    if tx["account_id"] == new_account_id and tx["date"][:7] == new_date[:7]:
-                        earned_so_far -= (tx["cashback"] or 0)
-                    cashback = max(0.0, round(min(cashback, cap - earned_so_far), 2))
+            if cashback is not None:
+                new_cashback = cashback
+            else:
+                new_cashback = 0.0
+                if new_acc and new_amount < 0 and new_acc["subtype"] == "credit_card" \
+                        and (new_acc["cashback_rate"] or 0) > 0:
+                    new_cashback = round(abs(new_amount) * new_acc["cashback_rate"] / 100.0, 2)
+                    cap = new_acc["cashback_monthly_cap"] or 0
+                    if cap > 0:
+                        earned_so_far = self.cashback_earned_this_month(new_account_id, new_date)
+                        # The OLD row (with its OLD cashback) is still in the table at this
+                        # point — exclude its own prior contribution from the baseline if it
+                        # would otherwise be double-counted (same account, same month), since
+                        # it's about to be replaced by the value we're computing now, not
+                        # added on top of it.
+                        if tx["account_id"] == new_account_id and tx["date"][:7] == new_date[:7]:
+                            earned_so_far -= (tx["cashback"] or 0)
+                        new_cashback = max(0.0, round(min(new_cashback, cap - earned_so_far), 2))
 
             self.conn.execute(
                 "UPDATE transactions SET date=?, payee=?, category_id=?, amount=?, currency=?, "
                 "note=?, account_id=?, cashback=? WHERE id=?",
                 (new_date, new_payee, new_category_id, new_amount, new_currency, new_note,
-                 new_account_id, cashback, tx_id),
+                 new_account_id, new_cashback, tx_id),
             )
 
             # Re-apply effects for the NEW values.

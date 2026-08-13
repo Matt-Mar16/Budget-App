@@ -934,6 +934,8 @@ def open_transaction_edit_dialog(parent, app, tx_id, on_saved=None):
     note_var = tk.StringVar(value=tx["note"] or "")
     account_var = tk.StringVar(value=acc_name_by_id.get(tx["account_id"], ""))
     tags_var = tk.StringVar(value=", ".join(db.get_transaction_tags(tx_id)))
+    original_cashback_str = f"{tx['cashback'] or 0:.2f}"
+    cashback_var = tk.StringVar(value=original_cashback_str)
 
     fields = [
         ("Date (YYYY-MM-DD)", date_var, None),
@@ -944,6 +946,7 @@ def open_transaction_edit_dialog(parent, app, tx_id, on_saved=None):
         ("Note", note_var, None),
         ("Paid from", account_var, [""] + acc_names),
         ("Tags (comma-separated)", tags_var, None),
+        ("Cashback (auto-calculated — edit to override manually)", cashback_var, None),
     ]
     for label, var, options in fields:
         ttk.Label(win, text=label, style="TLabel").pack(anchor="w", padx=14, pady=(8, 2))
@@ -968,11 +971,24 @@ def open_transaction_edit_dialog(parent, app, tx_id, on_saved=None):
         category_id = cat_id_by_name.get(category_var.get().strip())
         account_id = acc_id_by_name.get(account_var.get().strip())
 
+        # Only treat Cashback as a manual override if the user actually
+        # changed it from what was loaded -- otherwise leave it untouched
+        # (None) so the normal rate/cap auto-calculation still reacts to
+        # amount/account changes, same as before this field existed.
+        cashback_override = None
+        if cashback_var.get().strip() != original_cashback_str:
+            try:
+                cashback_override = float(cashback_var.get())
+            except ValueError:
+                messagebox.showerror("Invalid cashback", "Cashback must be a number.")
+                return
+
         try:
             db.update_transaction(
                 tx_id, date=date_var.get().strip(), payee=payee_var.get().strip(),
                 category_id=category_id, amount=amount, currency=currency,
                 note=note_var.get().strip(), account_id=account_id,
+                cashback=cashback_override,
             )
         except ReconciledTransactionError:
             if messagebox.askyesno(
@@ -982,6 +998,7 @@ def open_transaction_edit_dialog(parent, app, tx_id, on_saved=None):
                     tx_id, date=date_var.get().strip(), payee=payee_var.get().strip(),
                     category_id=category_id, amount=amount, currency=currency,
                     note=note_var.get().strip(), account_id=account_id,
+                    cashback=cashback_override,
                     force_unreconciled=True,
                 )
                 db.unreconcile_transaction(tx_id)
@@ -2262,7 +2279,10 @@ ACCOUNT_TYPE_OPTIONS = [
 ]
 ACCOUNT_TYPE_LABELS = [label for label, _, _ in ACCOUNT_TYPE_OPTIONS]
 ACCOUNT_TYPE_BY_LABEL = {label: (subtype, kind) for label, subtype, kind in ACCOUNT_TYPE_OPTIONS}
-ACCOUNT_TYPE_BY_SUBTYPE = {subtype: label for label, subtype, _ in ACCOUNT_TYPE_OPTIONS}
+# Keyed by (subtype, kind), not subtype alone -- "Other Asset" and "Other
+# Liability" both use subtype="other" and would otherwise collide, always
+# showing whichever option happened to be listed last ("Other Liability").
+ACCOUNT_TYPE_BY_SUBTYPE_KIND = {(subtype, kind): label for label, subtype, kind in ACCOUNT_TYPE_OPTIONS}
 
 
 class NetWorthTab(ScrollableTab):
@@ -2949,7 +2969,7 @@ class NetWorthTab(ScrollableTab):
         for row in self.tree.get_children():
             self.tree.delete(row)
         for a in self.app.db.list_accounts():
-            type_label = ACCOUNT_TYPE_BY_SUBTYPE.get(a["subtype"], "Other")
+            type_label = ACCOUNT_TYPE_BY_SUBTYPE_KIND.get((a["subtype"], a["kind"]), "Other")
             self.tree.insert("", "end", iid=str(a["id"]), values=(
                 a["name"], type_label, f"{a['balance']:,.2f}", a["currency"],
                 "yes" if a["liquid"] else "no"))
