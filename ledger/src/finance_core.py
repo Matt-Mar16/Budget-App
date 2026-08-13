@@ -88,7 +88,8 @@ class Database:
             expected_return_pct REAL DEFAULT 0,
             return_volatility_pct REAL DEFAULT 0,
             monthly_contribution REAL DEFAULT 0,
-            cashback_auto_invest_account_id INTEGER REFERENCES accounts(id)
+            cashback_auto_invest_account_id INTEGER REFERENCES accounts(id),
+            cashback_monthly_cap REAL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS transactions (
@@ -283,6 +284,8 @@ class Database:
         if "cashback_auto_invest_account_id" not in acc_cols:
             c.execute("ALTER TABLE accounts ADD COLUMN cashback_auto_invest_account_id INTEGER "
                        "REFERENCES accounts(id)")
+        if "cashback_monthly_cap" not in acc_cols:
+            c.execute("ALTER TABLE accounts ADD COLUMN cashback_monthly_cap REAL DEFAULT 0")  # 0 = no cap
 
         tx_cols = existing_cols("transactions")
         if "account_id" not in tx_cols:
@@ -579,6 +582,18 @@ class Database:
         with self.conn:
             self.conn.execute("DELETE FROM categories WHERE id=?", (category_id,))
 
+    def cashback_earned_this_month(self, account_id, date=None):
+        """Sums this account's already-earned cashback for the calendar
+        month containing `date` (default today) — the running total a
+        cashback_monthly_cap is checked against."""
+        date = date or datetime.date.today().isoformat()
+        prefix = date[:7]  # "YYYY-MM"
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(cashback), 0) as total FROM transactions "
+            "WHERE account_id=? AND date LIKE ?", (account_id, prefix + "%"),
+        ).fetchone()
+        return row["total"]
+
     # ---- transactions ----
     def add_transaction(self, date, payee, category_id, amount, currency, note="", account_id=None,
                          apply_cashback_roundup=True, is_transfer=False):
@@ -587,6 +602,10 @@ class Database:
         if (apply_cashback_roundup and acc and amount < 0 and acc["subtype"] == "credit_card"
                 and (acc["cashback_rate"] or 0) > 0):
             cashback = round(abs(amount) * acc["cashback_rate"] / 100.0, 2)
+            cap = acc["cashback_monthly_cap"] or 0
+            if cap > 0:
+                earned_so_far = self.cashback_earned_this_month(account_id, date)
+                cashback = max(0.0, round(min(cashback, cap - earned_so_far), 2))
         # If this card has an auto-invest target configured, cashback is
         # routed straight into that investment account's cost basis via the
         # same balance+contributions update add_investment_contribution()
@@ -1078,14 +1097,14 @@ class Database:
 
     def add_account(self, name, kind, balance, currency="GBP", liquid=False, subtype="cash",
                      credit_limit=0.0, cashback_rate=0.0, due_day=None,
-                     expected_return_pct=0.0, monthly_contribution=0.0):
+                     expected_return_pct=0.0, monthly_contribution=0.0, cashback_monthly_cap=0.0):
         self.conn.execute(
             "INSERT INTO accounts(name, kind, balance, currency, liquid, subtype, credit_limit, "
-            "cashback_rate, contributions, due_day, expected_return_pct, monthly_contribution) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "cashback_rate, contributions, due_day, expected_return_pct, monthly_contribution, "
+            "cashback_monthly_cap) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (name, kind, balance, currency.upper(), int(liquid), subtype, credit_limit,
              cashback_rate, balance if subtype == "investment" else 0.0, due_day,
-             expected_return_pct, monthly_contribution),
+             expected_return_pct, monthly_contribution, cashback_monthly_cap),
         )
         self.conn.commit()
 
@@ -1110,12 +1129,16 @@ class Database:
 
     def update_account_details(self, account_id, credit_limit=None, cashback_rate=None, due_day=None,
                                 expected_return_pct=None, monthly_contribution=None,
-                                return_volatility_pct=None, cashback_auto_invest_account_id=None):
+                                return_volatility_pct=None, cashback_auto_invest_account_id=None,
+                                cashback_monthly_cap=None):
         with self.conn:
             if credit_limit is not None:
                 self.conn.execute("UPDATE accounts SET credit_limit=? WHERE id=?", (credit_limit, account_id))
             if cashback_rate is not None:
                 self.conn.execute("UPDATE accounts SET cashback_rate=? WHERE id=?", (cashback_rate, account_id))
+            if cashback_monthly_cap is not None:
+                self.conn.execute("UPDATE accounts SET cashback_monthly_cap=? WHERE id=?",
+                                   (cashback_monthly_cap, account_id))
             if due_day is not None:
                 self.conn.execute("UPDATE accounts SET due_day=? WHERE id=?", (due_day, account_id))
             if expected_return_pct is not None:

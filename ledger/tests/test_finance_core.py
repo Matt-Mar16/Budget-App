@@ -99,6 +99,63 @@ def test_list_transfers_leg_id_can_be_used_to_delete_the_whole_pair(tmp_path):
     db.close()
 
 
+def test_cashback_earned_this_month_sums_only_the_current_calendar_month(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Card", "liability", 0.0, currency="GBP", subtype="credit_card", cashback_rate=10.0)
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_transaction("2026-07-15", "Shop", None, -50.0, "GBP", account_id=acc_id)  # £5 cashback, prior month
+    db.add_transaction("2026-08-01", "Shop", None, -20.0, "GBP", account_id=acc_id)  # £2 cashback, this month
+    db.add_transaction("2026-08-15", "Shop", None, -10.0, "GBP", account_id=acc_id)  # £1 cashback, this month
+
+    assert db.cashback_earned_this_month(acc_id, date="2026-08-20") == pytest.approx(3.0)
+    db.close()
+
+
+def test_add_transaction_caps_cashback_at_the_monthly_limit(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Card", "liability", 0.0, currency="GBP", subtype="credit_card",
+                    cashback_rate=10.0)
+    acc_id = db.list_accounts()[0]["id"]
+    db.update_account_details(acc_id, cashback_monthly_cap=5.0)
+
+    tx1 = db.add_transaction("2026-08-01", "Shop", None, -40.0, "GBP", account_id=acc_id)  # naive £4.00
+    tx2 = db.add_transaction("2026-08-02", "Shop", None, -40.0, "GBP", account_id=acc_id)  # naive £4.00, only £1 left
+    tx3 = db.add_transaction("2026-08-03", "Shop", None, -40.0, "GBP", account_id=acc_id)  # cap already hit
+
+    cb1 = db.conn.execute("SELECT cashback FROM transactions WHERE id=?", (tx1,)).fetchone()["cashback"]
+    cb2 = db.conn.execute("SELECT cashback FROM transactions WHERE id=?", (tx2,)).fetchone()["cashback"]
+    cb3 = db.conn.execute("SELECT cashback FROM transactions WHERE id=?", (tx3,)).fetchone()["cashback"]
+    assert cb1 == pytest.approx(4.0)
+    assert cb2 == pytest.approx(1.0)
+    assert cb3 == pytest.approx(0.0)
+    assert db.cashback_earned_this_month(acc_id, date="2026-08-03") == pytest.approx(5.0)
+    db.close()
+
+
+def test_add_transaction_cashback_uncapped_when_cap_is_zero(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Card", "liability", 0.0, currency="GBP", subtype="credit_card",
+                    cashback_rate=10.0)  # cashback_monthly_cap defaults to 0 = no cap
+    acc_id = db.list_accounts()[0]["id"]
+
+    tx_id = db.add_transaction("2026-08-01", "Shop", None, -1000.0, "GBP", account_id=acc_id)
+
+    tx = db.conn.execute("SELECT cashback FROM transactions WHERE id=?", (tx_id,)).fetchone()
+    assert tx["cashback"] == pytest.approx(100.0)
+    db.close()
+
+
+def test_update_account_details_can_set_cashback_monthly_cap(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Card", "liability", 0.0, currency="GBP", subtype="credit_card", cashback_rate=5.0)
+    acc_id = db.list_accounts()[0]["id"]
+
+    db.update_account_details(acc_id, cashback_monthly_cap=25.0)
+
+    assert db.get_account(acc_id)["cashback_monthly_cap"] == pytest.approx(25.0)
+    db.close()
+
+
 def test_add_balance_adjustment_raises_an_asset_account_to_match_a_statement(tmp_path):
     db = _db(tmp_path)
     db.add_account("Checking", "asset", 100.0, currency="GBP")

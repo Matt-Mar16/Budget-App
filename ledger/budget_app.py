@@ -2115,6 +2115,7 @@ class NetWorthTab(ScrollableTab):
         self.acc_liquid = tk.BooleanVar(value=False)
         self.acc_credit_limit = tk.StringVar(value="0")
         self.acc_cashback_rate = tk.StringVar(value="0")
+        self.acc_cashback_cap = tk.StringVar(value="0")
         self.acc_due_day = tk.StringVar(value="1")
         self.acc_expected_return = tk.StringVar(value="5")
         self.acc_monthly_contribution = tk.StringVar(value="0")
@@ -2143,9 +2144,12 @@ class NetWorthTab(ScrollableTab):
         ttk.Label(self.extra_frame, text="Cashback % on spend", style="CardDim.TLabel").grid(
             row=0, column=1, sticky="w")
         ttk.Entry(self.extra_frame, textvariable=self.acc_cashback_rate, width=10).grid(row=1, column=1, padx=(0, 12))
-        ttk.Label(self.extra_frame, text="Payment due day (1-28)", style="CardDim.TLabel").grid(
+        ttk.Label(self.extra_frame, text="Monthly cashback cap (0 = no cap)", style="CardDim.TLabel").grid(
             row=0, column=2, sticky="w")
-        ttk.Entry(self.extra_frame, textvariable=self.acc_due_day, width=10).grid(row=1, column=2)
+        ttk.Entry(self.extra_frame, textvariable=self.acc_cashback_cap, width=10).grid(row=1, column=2, padx=(0, 12))
+        ttk.Label(self.extra_frame, text="Payment due day (1-28)", style="CardDim.TLabel").grid(
+            row=0, column=3, sticky="w")
+        ttk.Entry(self.extra_frame, textvariable=self.acc_due_day, width=10).grid(row=1, column=3)
 
         self.inv_extra_frame = ttk.Frame(form, style="Card.TFrame")
         self.inv_extra_frame.grid(row=2, column=0, columnspan=6, sticky="w", pady=(8, 0))
@@ -2272,8 +2276,9 @@ class NetWorthTab(ScrollableTab):
         try:
             credit_limit = float(self.acc_credit_limit.get()) if subtype == "credit_card" else 0.0
             cashback_rate = float(self.acc_cashback_rate.get()) if subtype == "credit_card" else 0.0
+            cashback_cap = float(self.acc_cashback_cap.get()) if subtype == "credit_card" else 0.0
         except ValueError:
-            credit_limit, cashback_rate = 0.0, 0.0
+            credit_limit, cashback_rate, cashback_cap = 0.0, 0.0, 0.0
         due_day = None
         if subtype == "credit_card":
             try:
@@ -2297,7 +2302,8 @@ class NetWorthTab(ScrollableTab):
                                  liquid, subtype=subtype, credit_limit=credit_limit,
                                  cashback_rate=cashback_rate, due_day=due_day,
                                  expected_return_pct=expected_return,
-                                 monthly_contribution=monthly_contribution)
+                                 monthly_contribution=monthly_contribution,
+                                 cashback_monthly_cap=cashback_cap)
         self.acc_name.set("")
         self.acc_balance.set("")
         self.app.refresh_all()
@@ -2584,6 +2590,39 @@ class NetWorthTab(ScrollableTab):
             self.app.db.update_investment_value(account_id, val)
             self.app.refresh_all()
 
+    def _edit_cashback(self, account_id):
+        acc = self.app.db.get_account(account_id)
+        if not acc:
+            return
+        win = tk.Toplevel(self)
+        win.title("Edit Cashback")
+        win.configure(bg=self.app.c["bg"])
+        win.geometry("320x200")
+
+        ttk.Label(win, text="Cashback % on spend", style="TLabel").pack(anchor="w", padx=14, pady=(14, 2))
+        rate_var = tk.StringVar(value=f"{acc['cashback_rate']:.2f}")
+        ttk.Entry(win, textvariable=rate_var).pack(fill="x", padx=14)
+
+        ttk.Label(win, text="Monthly cashback cap (0 = no cap)", style="TLabel").pack(
+            anchor="w", padx=14, pady=(10, 2))
+        cap_var = tk.StringVar(value=f"{acc['cashback_monthly_cap']:.2f}")
+        ttk.Entry(win, textvariable=cap_var).pack(fill="x", padx=14)
+
+        def save():
+            try:
+                rate = float(rate_var.get())
+                cap = float(cap_var.get())
+            except ValueError:
+                messagebox.showerror("Edit Cashback", "Enter valid numbers.")
+                return
+            self.app.db.update_account_details(account_id, cashback_rate=rate,
+                                                cashback_monthly_cap=cap)
+            win.destroy()
+            self.app.refresh_all()
+
+        ttk.Button(win, text="Save", style="Accent.TButton", command=save).pack(
+            anchor="e", padx=14, pady=16)
+
     def _set_cashback_auto_invest(self, account_id):
         investments = [a for a in self.app.db.list_accounts() if a["subtype"] == "investment"]
         if not investments:
@@ -2707,6 +2746,10 @@ class NetWorthTab(ScrollableTab):
                 label = f"{a['name']} — {fmt_money(entry['balance'], cur)} of {fmt_money(entry['limit'], cur)}"
                 if a["cashback_rate"]:
                     label += f"  ·  {a['cashback_rate']:.1f}% cashback"
+                    if a["cashback_monthly_cap"]:
+                        earned = self.app.db.cashback_earned_this_month(a["id"], self.app.today.isoformat())
+                        label += (f"  ·  {fmt_money(earned, cur)} of "
+                                  f"{fmt_money(a['cashback_monthly_cap'], cur)} cap earned this month")
                 ttk.Label(row, text=label, style="Card.TLabel").pack(anchor="w")
                 bar_bg = tk.Canvas(row, height=10, width=400, bg=c["grid"], highlightthickness=0)
                 bar_bg.pack(anchor="w", pady=(3, 0))
@@ -2723,6 +2766,8 @@ class NetWorthTab(ScrollableTab):
                           style="CardDim.TLabel").pack(side="left")
                 ttk.Button(bottom, text="Set Due Day",
                            command=lambda aid=a["id"]: self._set_due_day(aid)).pack(side="left", padx=8)
+                ttk.Button(bottom, text="Edit Cashback…",
+                           command=lambda aid=a["id"]: self._edit_cashback(aid)).pack(side="left", padx=8)
                 if a["cashback_rate"]:
                     target = next((acc["name"] for acc in self.app.db.list_accounts()
                                    if acc["id"] == a["cashback_auto_invest_account_id"]), None)
