@@ -182,7 +182,8 @@ class Database:
         CREATE TABLE IF NOT EXISTS ignored_subscriptions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             payee TEXT NOT NULL,
-            dismissed_date TEXT NOT NULL
+            dismissed_date TEXT NOT NULL,
+            deleted_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS roundups (
@@ -322,6 +323,10 @@ class Database:
         debt_cols = existing_cols("debts")
         if "custom_payment" not in debt_cols:
             c.execute("ALTER TABLE debts ADD COLUMN custom_payment REAL DEFAULT 0")
+
+        ignsub_cols = existing_cols("ignored_subscriptions")
+        if "deleted_at" not in ignsub_cols:
+            c.execute("ALTER TABLE ignored_subscriptions ADD COLUMN deleted_at TEXT")
 
         cat_row = c.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='categories'"
@@ -1580,9 +1585,17 @@ class Database:
     def add_ignored_subscription(self, payee, date=None):
         date = date or datetime.date.today().isoformat()
         existing = self.conn.execute(
-            "SELECT id FROM ignored_subscriptions WHERE LOWER(payee)=LOWER(?)", (payee,)
+            "SELECT id, deleted_at FROM ignored_subscriptions WHERE LOWER(payee)=LOWER(?)", (payee,)
         ).fetchone()
         if existing:
+            if existing["deleted_at"] is not None:
+                # A previously (soft-)deleted ignore for this payee -- reviving
+                # it actually re-ignores the payee, rather than silently
+                # no-op'ing against a row that isn't in effect anymore.
+                self.conn.execute(
+                    "UPDATE ignored_subscriptions SET deleted_at=NULL, dismissed_date=? WHERE id=?",
+                    (date, existing["id"]))
+                self.conn.commit()
             return
         self.conn.execute(
             "INSERT INTO ignored_subscriptions(payee, dismissed_date) VALUES (?, ?)",
@@ -1590,15 +1603,33 @@ class Database:
         )
         self.conn.commit()
 
-    def remove_ignored_subscription(self, payee):
+    def remove_ignored_subscription(self, payee, date=None):
+        """Soft-deletes: the entry moves out of list_ignored_subscriptions()
+        (so the payee can resurface as a detected-subscription candidate
+        again) but is kept, recoverable via restore_ignored_subscription(),
+        rather than being gone outright."""
+        date = date or datetime.date.today().isoformat()
         self.conn.execute(
-            "DELETE FROM ignored_subscriptions WHERE LOWER(payee)=LOWER(?)", (payee,)
+            "UPDATE ignored_subscriptions SET deleted_at=? "
+            "WHERE LOWER(payee)=LOWER(?) AND deleted_at IS NULL",
+            (date, payee),
+        )
+        self.conn.commit()
+
+    def restore_ignored_subscription(self, payee):
+        self.conn.execute(
+            "UPDATE ignored_subscriptions SET deleted_at=NULL WHERE LOWER(payee)=LOWER(?)", (payee,)
         )
         self.conn.commit()
 
     def list_ignored_subscriptions(self):
         return self.conn.execute(
-            "SELECT * FROM ignored_subscriptions ORDER BY dismissed_date DESC"
+            "SELECT * FROM ignored_subscriptions WHERE deleted_at IS NULL ORDER BY dismissed_date DESC"
+        ).fetchall()
+
+    def list_recently_deleted_ignored_subscriptions(self):
+        return self.conn.execute(
+            "SELECT * FROM ignored_subscriptions WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"
         ).fetchall()
 
     def _advance_date(self, date_str, frequency, custom_interval_months=None):

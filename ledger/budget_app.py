@@ -3910,16 +3910,22 @@ class SettingsTab(ScrollableTab):
         win = tk.Toplevel(self)
         win.title("Ignored Subscriptions")
         win.configure(bg=self.app.c["bg"])
-        win.geometry("440x380")
+        win.geometry("460x520")
 
-        ttk.Label(win, wraplength=400, justify="left", style="TLabel",
-                  text="Dismissed from the Recurring tab's Detected Subscriptions list. "
-                       "Deleting one here permanently forgets the dismissal — it can resurface "
-                       "as a suggestion again next time it's detected."
+        ttk.Label(win, wraplength=420, justify="left", style="TLabel",
+                  text="Dismissed from the Recurring tab's Detected Subscriptions list — "
+                       "deleting one here lets it resurface as a suggestion again, and can be "
+                       "undone from Recently Deleted below."
                   ).pack(anchor="w", padx=14, pady=(14, 8))
 
         list_frame = ttk.Frame(win)
-        list_frame.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        list_frame.pack(fill="both", expand=True, padx=14)
+
+        ttk.Separator(win).pack(fill="x", padx=14, pady=10)
+
+        ttk.Label(win, text="Recently Deleted", style="H2.TLabel").pack(anchor="w", padx=14)
+        deleted_frame = ttk.Frame(win)
+        deleted_frame.pack(fill="both", expand=True, padx=14, pady=(4, 14))
 
         def render():
             for w in list_frame.winfo_children():
@@ -3932,11 +3938,32 @@ class SettingsTab(ScrollableTab):
                 r.pack(fill="x", pady=2)
                 ttk.Label(r, text=f"{row['payee']} (dismissed {row['dismissed_date']})",
                           style="TLabel").pack(side="left")
-                ttk.Button(r, text="Delete Permanently",
+                ttk.Button(r, text="Delete",
                            command=lambda p=row["payee"]: do_delete(p)).pack(side="right")
 
+            for w in deleted_frame.winfo_children():
+                w.destroy()
+            deleted = self.app.db.list_recently_deleted_ignored_subscriptions()
+            if not deleted:
+                ttk.Label(deleted_frame, text="Nothing deleted.", style="CardDim.TLabel").pack(anchor="w")
+            for row in deleted:
+                r = ttk.Frame(deleted_frame)
+                r.pack(fill="x", pady=2)
+                ttk.Label(r, text=f"{row['payee']} (deleted {row['deleted_at']})",
+                          style="CardDim.TLabel").pack(side="left")
+                ttk.Button(r, text="Restore",
+                           command=lambda p=row["payee"]: do_restore(p)).pack(side="right")
+
         def do_delete(payee):
+            if not messagebox.askyesno("Delete", f"Stop ignoring '{payee}'? It can be restored "
+                                        "afterward from Recently Deleted if you change your mind."):
+                return
             self.app.db.remove_ignored_subscription(payee)
+            self.app.refresh_all()
+            render()
+
+        def do_restore(payee):
+            self.app.db.restore_ignored_subscription(payee)
             self.app.refresh_all()
             render()
 

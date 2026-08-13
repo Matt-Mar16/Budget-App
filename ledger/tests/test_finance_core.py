@@ -2259,6 +2259,40 @@ def test_remove_ignored_subscription_deletes_it_case_insensitively(tmp_path):
     db.close()
 
 
+def test_remove_ignored_subscription_is_recoverable_via_restore(tmp_path):
+    db = _db(tmp_path)
+    db.add_ignored_subscription("Netflix")
+
+    db.remove_ignored_subscription("netflix")
+    assert db.list_ignored_subscriptions() == []
+    deleted = db.list_recently_deleted_ignored_subscriptions()
+    assert len(deleted) == 1
+    assert deleted[0]["payee"] == "Netflix"
+
+    db.restore_ignored_subscription("NETFLIX")
+
+    assert [r["payee"] for r in db.list_ignored_subscriptions()] == ["Netflix"]
+    assert db.list_recently_deleted_ignored_subscriptions() == []
+    db.close()
+
+
+def test_add_ignored_subscription_revives_a_soft_deleted_entry_instead_of_noop(tmp_path):
+    db = _db(tmp_path)
+    db.add_ignored_subscription("Netflix", date="2026-01-01")
+    db.remove_ignored_subscription("Netflix", date="2026-02-01")
+    assert db.list_ignored_subscriptions() == []
+
+    # Re-ignoring after a soft-delete must actually take effect again --
+    # not silently no-op just because a (now-inactive) row already exists.
+    db.add_ignored_subscription("Netflix", date="2026-03-01")
+
+    active = db.list_ignored_subscriptions()
+    assert len(active) == 1
+    assert active[0]["dismissed_date"] == "2026-03-01"
+    assert db.list_recently_deleted_ignored_subscriptions() == []
+    db.close()
+
+
 def test_detect_recurring_candidates_excludes_ignored_payees(tmp_path):
     db = _db(tmp_path)
     db.add_account("Checking", "asset", 0.0, currency="GBP")
