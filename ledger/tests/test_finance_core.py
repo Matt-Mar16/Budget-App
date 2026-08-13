@@ -206,6 +206,58 @@ def test_transactions_in_month_respects_a_custom_start_day(tmp_path):
     db.close()
 
 
+def test_budget_run_rate_default_days_elapsed_is_unchanged(tmp_path):
+    db = _db(tmp_path)
+    db.add_category("Groceries Run Rate 2", "need", 300.0)
+    cat_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries Run Rate 2")
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_transaction("2026-08-10", "Tesco", cat_id, -100.0, "GBP", account_id=acc_id)
+
+    result = budget_run_rate(db, 2026, 8, today=datetime.date(2026, 8, 10))
+
+    row = next(r for r in result if r["category"]["id"] == cat_id)
+    assert row["days_elapsed"] == 10  # 10th of a plain-calendar August
+    assert row["days_in_month"] == 31
+    db.close()
+
+
+def test_budget_run_rate_respects_a_custom_start_day(tmp_path):
+    db = _db(tmp_path)
+    db.set_setting("month_start_day", "25")
+    db.add_category("Groceries Run Rate 3", "need", 300.0)
+    cat_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries Run Rate 3")
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    # Reporting month (2026, 7) with month_start_day=25 spans 25 Jul-24 Aug.
+    db.add_transaction("2026-07-29", "Tesco", cat_id, -100.0, "GBP", account_id=acc_id)
+
+    result = budget_run_rate(db, 2026, 7, today=datetime.date(2026, 7, 29))
+
+    row = next(r for r in result if r["category"]["id"] == cat_id)
+    assert row["days_elapsed"] == 5  # Jul 25 (day 1) .. Jul 29 (day 5)
+    assert row["days_in_month"] == 31  # 25 Jul-24 Aug = 31 days
+    db.close()
+
+
+def test_budget_run_rate_clamps_days_elapsed_after_the_period_ends(tmp_path):
+    db = _db(tmp_path)
+    db.set_setting("month_start_day", "25")
+    db.add_category("Groceries Run Rate 4", "need", 300.0)
+    cat_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries Run Rate 4")
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_transaction("2026-07-26", "Tesco", cat_id, -310.0, "GBP", account_id=acc_id)
+
+    # "Today" is well after this period (25 Jul-24 Aug, i.e. month=7) has closed.
+    result = budget_run_rate(db, 2026, 7, today=datetime.date(2026, 9, 15))
+
+    row = next(r for r in result if r["category"]["id"] == cat_id)
+    assert row["days_elapsed"] == 31  # clamped to the full period, not still counting up
+    assert row["projected"] == pytest.approx(310.0)  # spend-so-far == full month's projection
+    db.close()
+
+
 def test_advance_date_monthly_still_advances_by_exactly_one_month_and_rolls_over_years(tmp_path):
     # Regression coverage for the shared month-rollover math this same task
     # generalized to also support custom N-month intervals — this had no

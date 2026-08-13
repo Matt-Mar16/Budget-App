@@ -2893,17 +2893,21 @@ def category_budget_status(db: Database, year, month):
 
 def budget_run_rate(db: Database, year, month, today: Optional[datetime.date] = None):
     """Projects each budgeted category's month-end spend from the pace set
-    so far this month (spend-so-far / days-elapsed * days-in-month), so an
-    overspend can be caught while there's still time to react instead of
-    only after the month closes."""
+    so far this reporting period (spend-so-far / days-elapsed * days-in-
+    period), so an overspend can be caught while there's still time to
+    react instead of only after the period closes. Respects the
+    month_start_day setting via month_bounds()."""
     today = today or datetime.date.today()
-    days_in_month = calendar.monthrange(year, month)[1]
-    if (today.year, today.month) == (year, month):
-        days_elapsed = today.day
-    elif (today.year, today.month) > (year, month):
+    start_str, end_str = month_bounds(db, year, month)
+    start_date = datetime.date.fromisoformat(start_str)
+    end_date = datetime.date.fromisoformat(end_str)
+    days_in_month = (end_date - start_date).days + 1
+    if today < start_date:
+        days_elapsed = 0
+    elif today > end_date:
         days_elapsed = days_in_month
     else:
-        days_elapsed = 0
+        days_elapsed = (today - start_date).days + 1
 
     out = []
     for row in category_budget_status(db, year, month):
