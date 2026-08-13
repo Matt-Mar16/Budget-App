@@ -131,14 +131,37 @@ class ScrollableTab(ttk.Frame):
         canvas.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         self._canvas = canvas
+        self._vsb = vsb
 
         super().__init__(canvas, padding=(0, 0, 12, 12))
         window_id = canvas.create_window((0, 0), window=self, anchor="nw")
 
-        self.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(window_id, width=e.width))
+        def _update_scrollbar_visibility():
+            bbox = canvas.bbox("all")
+            content_height = (bbox[3] - bbox[1]) if bbox else 0
+            if content_height > canvas.winfo_height():
+                vsb.grid(row=0, column=1, sticky="ns")
+            else:
+                vsb.grid_remove()
+
+        self._update_scrollbar_visibility = _update_scrollbar_visibility
+
+        def _on_self_configure(e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            _update_scrollbar_visibility()
+
+        def _on_canvas_configure(e):
+            canvas.itemconfig(window_id, width=e.width)
+            _update_scrollbar_visibility()
+
+        self.bind("<Configure>", _on_self_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
 
         def _on_wheel(event):
+            # Widgets that scroll their own content (Treeview/Text) should keep
+            # the wheel to themselves rather than also scrolling the page under them.
+            if isinstance(event.widget, (ttk.Treeview, tk.Text)):
+                return
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
         canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_wheel))
@@ -1543,12 +1566,17 @@ class TransactionsTab(ScrollableTab):
                       ).pack(anchor="w", padx=10, pady=(0, 4))
 
         cols = ("row", "date", "payee", "amount", "status", "dup")
-        tree = ttk.Treeview(win, columns=cols, show="headings", height=14, selectmode="extended")
+        tree_frame = ttk.Frame(win)
+        tree_frame.pack(fill="both", expand=True, padx=10)
+        tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=14, selectmode="extended")
         for col, w, title in zip(cols, (45, 90, 190, 90, 200, 110),
                                   ("Row", "Date", "Payee", "Amount", "Status", "Duplicate?")):
             tree.heading(col, text=title)
             tree.column(col, width=w, anchor="w")
-        tree.pack(fill="both", expand=True, padx=10)
+        tree.pack(side="left", fill="both", expand=True)
+        tree_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        tree_scroll.pack(side="right", fill="y")
+        tree.configure(yscrollcommand=tree_scroll.set)
         dup_ids = []
         for r in rows:
             status = "OK" if r["parsed_ok"] else f"ERROR: {r['error']}"
@@ -1797,14 +1825,19 @@ class RecurringTab(ScrollableTab):
         list_card = Card(self, title="All Recurring Items")
         list_card.pack(fill="both", expand=True, pady=(0, 10))
         cols = ("name", "payee", "category", "amount", "currency", "frequency", "next_date", "account", "active")
-        self.tree = ttk.Treeview(list_card, columns=cols, show="headings", height=8)
+        tree_frame = ttk.Frame(list_card, style="Card.TFrame")
+        tree_frame.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=8)
         headers = {"name": "Name", "payee": "Payee", "category": "Category", "amount": "Amount",
                    "currency": "Ccy", "frequency": "Frequency", "next_date": "Next Date",
                    "account": "Account", "active": "Active"}
         for c in cols:
             self.tree.heading(c, text=headers[c])
             self.tree.column(c, width=110, anchor="w")
-        self.tree.pack(fill="both", expand=True)
+        self.tree.pack(side="left", fill="both", expand=True)
+        tree_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        tree_scroll.pack(side="right", fill="y")
+        self.tree.configure(yscrollcommand=tree_scroll.set)
 
         btn_row = ttk.Frame(self)
         btn_row.pack(fill="x")
@@ -1983,11 +2016,16 @@ class DebtPlannerTab(ScrollableTab):
         list_card = Card(self, title="Debts")
         list_card.pack(fill="x", pady=(0, 10))
         cols = ("name", "balance", "apr", "min_payment", "custom_payment")
-        self.tree = ttk.Treeview(list_card, columns=cols, show="headings", height=5)
+        tree_frame = ttk.Frame(list_card, style="Card.TFrame")
+        tree_frame.pack(fill="x", expand=True)
+        self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=5)
         for c, label in zip(cols, ["Name", "Balance", "APR %", "Min Payment", "Planned Payment"]):
             self.tree.heading(c, text=label)
             self.tree.column(c, width=140)
-        self.tree.pack(fill="x", expand=True)
+        self.tree.pack(side="left", fill="x", expand=True)
+        tree_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        tree_scroll.pack(side="right", fill="y")
+        self.tree.configure(yscrollcommand=tree_scroll.set)
         btns = ttk.Frame(list_card, style="Card.TFrame")
         btns.pack(fill="x", pady=(8, 0))
         ttk.Button(btns, text="Delete Selected Debt", command=self.delete_selected).pack(side="left")
@@ -2205,15 +2243,22 @@ class NetWorthTab(ScrollableTab):
         list_card = Card(self, title="Accounts")
         list_card.pack(fill="x", pady=(0, 10))
         cols = ("name", "type", "balance", "currency", "liquid")
-        self.tree = ttk.Treeview(list_card, columns=cols, show="headings", height=6)
+        acc_tree_frame = ttk.Frame(list_card, style="Card.TFrame")
+        acc_tree_frame.pack(fill="x", expand=True)
+        self.tree = ttk.Treeview(acc_tree_frame, columns=cols, show="headings", height=6)
         for c, label in zip(cols, ["Name", "Type", "Balance", "Ccy", "Liquid"]):
             self.tree.heading(c, text=label)
             self.tree.column(c, width=130)
-        self.tree.pack(fill="x", expand=True)
+        self.tree.pack(side="left", fill="x", expand=True)
+        acc_tree_scroll = ttk.Scrollbar(acc_tree_frame, orient="vertical", command=self.tree.yview)
+        acc_tree_scroll.pack(side="right", fill="y")
+        self.tree.configure(yscrollcommand=acc_tree_scroll.set)
         btn_row = ttk.Frame(list_card, style="Card.TFrame")
         btn_row.pack(fill="x", pady=(8, 0))
-        ttk.Button(btn_row, text="Delete Selected Account", command=self.delete_selected).pack(
+        ttk.Button(btn_row, text="Edit Selected Account…", command=self.open_edit_account_dialog).pack(
             side="left")
+        ttk.Button(btn_row, text="Delete Selected Account", command=self.delete_selected).pack(
+            side="left", padx=6)
         ttk.Button(btn_row, text="Transfer Between Accounts…", style="Accent.TButton",
                    command=self.open_transfer_dialog).pack(side="left", padx=6)
         ttk.Button(btn_row, text="View Ledger…", command=self.open_account_ledger).pack(side="left")
@@ -2225,13 +2270,19 @@ class NetWorthTab(ScrollableTab):
         transfers_card = Card(self, title="Transfers")
         transfers_card.pack(fill="x", pady=(0, 10))
         transfer_cols = ("date", "from", "to", "amount", "received", "rate")
-        self.transfers_tree = ttk.Treeview(transfers_card, columns=transfer_cols,
+        transfers_tree_frame = ttk.Frame(transfers_card, style="Card.TFrame")
+        transfers_tree_frame.pack(fill="x", expand=True)
+        self.transfers_tree = ttk.Treeview(transfers_tree_frame, columns=transfer_cols,
                                             show="headings", height=6)
         for col, label in zip(transfer_cols,
                                ["Date", "From", "To", "Amount", "Received", "Rate"]):
             self.transfers_tree.heading(col, text=label)
             self.transfers_tree.column(col, width=120, anchor="w")
-        self.transfers_tree.pack(fill="x", expand=True)
+        self.transfers_tree.pack(side="left", fill="x", expand=True)
+        transfers_tree_scroll = ttk.Scrollbar(transfers_tree_frame, orient="vertical",
+                                               command=self.transfers_tree.yview)
+        transfers_tree_scroll.pack(side="right", fill="y")
+        self.transfers_tree.configure(yscrollcommand=transfers_tree_scroll.set)
         ttk.Button(transfers_card, text="Delete Transfer", command=self.delete_selected_transfer).pack(
             anchor="w", pady=(8, 0))
 
@@ -2347,6 +2398,76 @@ class NetWorthTab(ScrollableTab):
         for iid in self.tree.selection():
             self.app.db.delete_account(int(iid))
         self.app.refresh_all()
+
+    def open_edit_account_dialog(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("Edit Account", "Select an account first.")
+            return
+        if len(sel) > 1:
+            messagebox.showinfo("Edit Account", "Select just one account to edit.")
+            return
+        account_id = int(sel[0])
+        acc = self.app.db.get_account(account_id)
+        if not acc:
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Edit Account")
+        win.configure(bg=self.app.c["bg"])
+        win.geometry("380x360")
+
+        ttk.Label(win, text="Name", style="TLabel").pack(anchor="w", padx=14, pady=(14, 2))
+        name_var = tk.StringVar(value=acc["name"])
+        ttk.Entry(win, textvariable=name_var).pack(fill="x", padx=14)
+
+        ttk.Label(win, text="Currency", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        currency_var = tk.StringVar(value=acc["currency"])
+        ttk.Entry(win, textvariable=currency_var).pack(fill="x", padx=14)
+
+        ttk.Label(win, text="Balance", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        balance_var = tk.StringVar(value=str(acc["balance"]))
+        ttk.Entry(win, textvariable=balance_var).pack(fill="x", padx=14)
+        ttk.Label(win, wraplength=340, justify="left", style="CardDim.TLabel",
+                  text="Directly sets the balance — no transaction is recorded. Use this to "
+                       "backfill an account's starting balance without logging every past "
+                       "transaction; use Reconcile… instead if you want an adjustment transaction."
+                  ).pack(anchor="w", padx=14, pady=(4, 0))
+
+        liquid_var = tk.BooleanVar(value=bool(acc["liquid"]))
+        ttk.Checkbutton(win, text="Liquid", variable=liquid_var).pack(anchor="w", padx=14, pady=(10, 0))
+
+        credit_limit_var = None
+        if acc["subtype"] == "credit_card":
+            ttk.Label(win, text="Credit limit", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+            credit_limit_var = tk.StringVar(value=str(acc["credit_limit"] or 0))
+            ttk.Entry(win, textvariable=credit_limit_var).pack(fill="x", padx=14)
+
+        def do_save():
+            name = name_var.get().strip()
+            currency = currency_var.get().strip().upper()
+            if not name or not currency:
+                messagebox.showerror("Edit Account", "Name and currency are required.")
+                return
+            try:
+                balance = float(balance_var.get())
+            except ValueError:
+                messagebox.showerror("Edit Account", "Balance must be a number.")
+                return
+            self.app.db.update_account_core(account_id, name=name, currency=currency,
+                                             liquid=liquid_var.get())
+            self.app.db.update_account_balance(account_id, balance)
+            if credit_limit_var is not None:
+                try:
+                    self.app.db.update_account_details(
+                        account_id, credit_limit=float(credit_limit_var.get()))
+                except ValueError:
+                    pass
+            win.destroy()
+            self.app.refresh_all()
+
+        ttk.Button(win, text="Save", style="Accent.TButton", command=do_save).pack(
+            anchor="e", padx=14, pady=16)
 
     def open_transfer_dialog(self):
         accounts = self.app.db.list_accounts()
@@ -2576,12 +2697,17 @@ class NetWorthTab(ScrollableTab):
             anchor="w", padx=10, pady=(10, 4))
 
         cols = ("date", "payee", "amount", "balance", "flags")
-        tree = ttk.Treeview(win, columns=cols, show="headings", height=18)
+        ledger_tree_frame = ttk.Frame(win)
+        ledger_tree_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        tree = ttk.Treeview(ledger_tree_frame, columns=cols, show="headings", height=18)
         for col, label, w in zip(cols, ["Date", "Payee/Transfer", "Amount", "Balance", ""],
                                   (90, 260, 100, 110, 60)):
             tree.heading(col, text=label)
             tree.column(col, width=w, anchor="w")
-        tree.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        tree.pack(side="left", fill="both", expand=True)
+        ledger_tree_scroll = ttk.Scrollbar(ledger_tree_frame, orient="vertical", command=tree.yview)
+        ledger_tree_scroll.pack(side="right", fill="y")
+        tree.configure(yscrollcommand=ledger_tree_scroll.set)
 
         def refresh_ledger_rows():
             for row in tree.get_children():
