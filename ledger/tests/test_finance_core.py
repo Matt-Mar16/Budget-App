@@ -95,13 +95,45 @@ def test_add_balance_adjustment_does_not_trigger_cashback_or_roundup(tmp_path):
                     cashback_rate=5.0)
     acc_id = db.list_accounts()[0]["id"]
 
-    tx_id = db.add_balance_adjustment(acc_id, -150.0)  # a -50 amount transaction
+    # Correcting from -100 owed to -50 owed (paying down debt) yields a
+    # liability-inverted delta of -50: a NEGATIVE amount, which is exactly
+    # the condition add_transaction's cashback/roundup gates key off of —
+    # this is the case that actually proves the apply_cashback_roundup=False
+    # guard is doing something (a -150 target instead would yield +50,
+    # never reaching those gates regardless of the guard).
+    tx_id = db.add_balance_adjustment(acc_id, -50.0)
 
     tx = db.conn.execute("SELECT * FROM transactions WHERE id=?", (tx_id,)).fetchone()
+    assert tx["amount"] == pytest.approx(-50.0)
     assert tx["cashback"] == 0.0
     assert db.conn.execute(
         "SELECT COUNT(*) FROM roundups WHERE transaction_id=?", (tx_id,)
     ).fetchone()[0] == 0
+    db.close()
+
+
+def test_add_balance_adjustment_is_excluded_from_monthly_income_expense_totals(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 100.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+
+    db.add_balance_adjustment(acc_id, 175.0, date="2026-08-15")
+
+    # A reconciliation correction isn't a real cash-flow event -- it must be
+    # excluded from monthly aggregates the same way internal transfers are,
+    # or it would distort savings-rate/income-vs-expense reporting for
+    # whatever month it happens to land in.
+    assert db.transactions_in_month(2026, 8) == []
+    # ...but it must still be visible in the account's own ledger/statement.
+    assert len(db.account_ledger(acc_id)) == 1
+    db.close()
+
+
+def test_add_balance_adjustment_raises_a_clear_error_for_an_unknown_account(tmp_path):
+    db = _db(tmp_path)
+
+    with pytest.raises(ValueError, match="[Aa]ccount"):
+        db.add_balance_adjustment(999, 100.0)
     db.close()
 
 

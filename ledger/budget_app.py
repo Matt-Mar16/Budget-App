@@ -2453,12 +2453,18 @@ class NetWorthTab(ScrollableTab):
             except ValueError:
                 diff_label.config(text="")
                 return
-            diff = actual - acc["balance"]
-            if abs(diff) < 0.005:
+            raw_diff = actual - acc["balance"]
+            if abs(raw_diff) < 0.005:
                 diff_label.config(text="Already matches — no adjustment needed.")
             else:
+                # Mirror add_balance_adjustment's own sign convention: for a
+                # liability account (credit card/loan), the transaction
+                # amount that produces the target balance is the negation
+                # of the raw difference — shown here so the preview matches
+                # what will actually appear in the ledger afterward.
+                delta = -raw_diff if acc["kind"] == "liability" else raw_diff
                 diff_label.config(
-                    text=f"Will record an adjustment of {fmt_money(diff, acc['currency'])}.")
+                    text=f"Will record an adjustment of {fmt_money(delta, acc['currency'])}.")
         actual_var.trace_add("write", update_diff_preview)
         update_diff_preview()
 

@@ -581,7 +581,7 @@ class Database:
 
     # ---- transactions ----
     def add_transaction(self, date, payee, category_id, amount, currency, note="", account_id=None,
-                         apply_cashback_roundup=True):
+                         apply_cashback_roundup=True, is_transfer=False):
         acc = self.get_account(account_id) if account_id else None
         cashback = 0.0
         if (apply_cashback_roundup and acc and amount < 0 and acc["subtype"] == "credit_card"
@@ -596,9 +596,9 @@ class Database:
         with self.conn:  # atomic: insert + balance effect + roundup + auto-invest together
             cur = self.conn.execute(
                 "INSERT INTO transactions(date, payee, category_id, amount, currency, note, account_id, "
-                "cashback, cashback_redeemed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "cashback, cashback_redeemed, is_transfer) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (date, payee, category_id, amount, currency.upper(), note, account_id, cashback,
-                 cashback_redeemed),
+                 cashback_redeemed, int(is_transfer)),
             )
             tx_id = cur.lastrowid
             if acc:
@@ -622,8 +622,16 @@ class Database:
         instead of silently overwriting `balance`. Returns the new
         transaction's id, or None if the balance already matched (no
         adjustment needed). Never triggers cashback/round-ups — a
-        correction isn't a purchase."""
+        correction isn't a purchase. Marked is_transfer=True (with no
+        transfer_group_id/paired leg) so it's excluded from monthly
+        income/expense aggregates the same way real transfers are — a
+        reconciliation correction isn't a cash-flow event any more than
+        moving money between your own accounts is — while still showing up
+        in the account's own ledger/statement, which always includes
+        transfers."""
         acc = self.get_account(account_id)
+        if acc is None:
+            raise ValueError(f"No account with id {account_id}.")
         raw_diff = round(actual_balance - acc["balance"], 2)
         if raw_diff == 0:
             return None
@@ -632,7 +640,7 @@ class Database:
         return self.add_transaction(
             date, "Balance Adjustment", None, delta, acc["currency"],
             note="Reconciled to match statement", account_id=account_id,
-            apply_cashback_roundup=False,
+            apply_cashback_roundup=False, is_transfer=True,
         )
 
     def _require_unreconciled(self, tx_id):
