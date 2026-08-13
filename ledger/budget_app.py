@@ -2183,6 +2183,19 @@ class NetWorthTab(ScrollableTab):
         ttk.Button(btn_row, text="Reconcile…", command=self.open_reconcile_dialog).pack(
             side="left", padx=6)
 
+        transfers_card = Card(self, title="Transfers")
+        transfers_card.pack(fill="x", pady=(0, 10))
+        transfer_cols = ("date", "from", "to", "amount", "received", "rate")
+        self.transfers_tree = ttk.Treeview(transfers_card, columns=transfer_cols,
+                                            show="headings", height=6)
+        for col, label in zip(transfer_cols,
+                               ["Date", "From", "To", "Amount", "Received", "Rate"]):
+            self.transfers_tree.heading(col, text=label)
+            self.transfers_tree.column(col, width=120, anchor="w")
+        self.transfers_tree.pack(fill="x", expand=True)
+        ttk.Button(transfers_card, text="Delete Transfer", command=self.delete_selected_transfer).pack(
+            anchor="w", pady=(8, 0))
+
         summary_row = ttk.Frame(self)
         summary_row.pack(fill="x", pady=(0, 10))
         summary_row.columnconfigure(0, weight=2)
@@ -2481,6 +2494,22 @@ class NetWorthTab(ScrollableTab):
         ttk.Button(win, text="Reconcile", style="Accent.TButton", command=do_reconcile).pack(
             anchor="e", padx=14, pady=16)
 
+    def delete_selected_transfer(self):
+        from finance_core import ReconciledTransactionError
+        sel = self.transfers_tree.selection()
+        if not sel:
+            messagebox.showinfo("Delete Transfer", "Select a transfer first.")
+            return
+        try:
+            self.app.db.delete_transaction(int(sel[0]))
+        except ReconciledTransactionError:
+            messagebox.showinfo(
+                "Reconciled transaction",
+                "One leg of this transfer is reconciled/locked and was not deleted. "
+                "Unreconcile it first if you need to remove this transfer.")
+            return
+        self.app.refresh_all()
+
     def open_account_ledger(self):
         sel = self.tree.selection()
         if not sel:
@@ -2628,6 +2657,15 @@ class NetWorthTab(ScrollableTab):
             self.tree.insert("", "end", iid=str(a["id"]), values=(
                 a["name"], type_label, f"{a['balance']:,.2f}", a["currency"],
                 "yes" if a["liquid"] else "no"))
+
+        for row in self.transfers_tree.get_children():
+            self.transfers_tree.delete(row)
+        for t in self.app.db.list_transfers():
+            rate_text = f"{t['historical_rate']:.4f}" if t["from_currency"] != t["to_currency"] else "—"
+            self.transfers_tree.insert("", "end", iid=str(t["leg_id"]), values=(
+                t["date"], t["from_account"] or "(deleted)", t["to_account"] or "(deleted)",
+                fmt_money(t["from_amount"], t["from_currency"]),
+                fmt_money(t["to_amount"], t["to_currency"]), rate_text))
 
         c = self.app.c
         cur = self.app.reporting_currency()

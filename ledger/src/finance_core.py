@@ -1393,7 +1393,7 @@ class Database:
         """One row per transfer (both legs joined), newest first — for a
         dedicated Transfers view distinct from the raw transaction list."""
         rows = self.conn.execute(
-            "SELECT t.transfer_group_id, t.date, "
+            "SELECT t.id as leg_id, t.transfer_group_id, t.date, "
             "src.name as from_account, dst.name as to_account, "
             "ABS(t.amount) as from_amount, t.currency as from_currency, "
             "t2.amount as to_amount, t2.currency as to_currency, t.historical_rate "

@@ -36,6 +36,44 @@ def _db(tmp_path):
     return Database(str(tmp_path / "test.db"))
 
 
+def test_list_transfers_joins_both_legs_of_a_transfer(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 500.0, currency="GBP")
+    db.add_account("Savings", "asset", 0.0, currency="GBP")
+    checking_id = next(a["id"] for a in db.list_accounts() if a["name"] == "Checking")
+    savings_id = next(a["id"] for a in db.list_accounts() if a["name"] == "Savings")
+
+    db.transfer_between_accounts(checking_id, savings_id, 100.0, date="2026-08-01",
+                                  note="Emergency fund top-up")
+
+    rows = db.list_transfers()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["from_account"] == "Checking"
+    assert row["to_account"] == "Savings"
+    assert row["from_amount"] == pytest.approx(100.0)
+    assert row["to_amount"] == pytest.approx(100.0)
+    assert row["from_currency"] == "GBP"
+    assert row["leg_id"] is not None
+
+
+def test_list_transfers_leg_id_can_be_used_to_delete_the_whole_pair(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 500.0, currency="GBP")
+    db.add_account("Savings", "asset", 0.0, currency="GBP")
+    checking_id = next(a["id"] for a in db.list_accounts() if a["name"] == "Checking")
+    savings_id = next(a["id"] for a in db.list_accounts() if a["name"] == "Savings")
+    db.transfer_between_accounts(checking_id, savings_id, 100.0, date="2026-08-01")
+
+    leg_id = db.list_transfers()[0]["leg_id"]
+    db.delete_transaction(leg_id)
+
+    assert db.list_transfers() == []
+    assert db.get_account(checking_id)["balance"] == pytest.approx(500.0)
+    assert db.get_account(savings_id)["balance"] == pytest.approx(0.0)
+    db.close()
+
+
 def test_add_balance_adjustment_raises_an_asset_account_to_match_a_statement(tmp_path):
     db = _db(tmp_path)
     db.add_account("Checking", "asset", 100.0, currency="GBP")
