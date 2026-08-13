@@ -55,8 +55,10 @@ Every reporting function that currently takes `(db, year, month)` —
 `idle_cash_nudge`, `category_budget_status`, `budget_run_rate`,
 `categories_over_threshold`, and the `Database.transactions_in_month`
 method itself — either calls `transactions_in_month` directly or calls
-something that does. **Only `transactions_in_month` and the two functions
-that independently assume calendar-month day-counts need real changes:**
+something that does. **Only `transactions_in_month` and one function that
+independently assumes calendar-month day-counts (`budget_run_rate`) need
+real changes** — a second function with the same day-count dependency,
+`daily_spend_totals`, is deliberately left alone (see below):
 
 1. **`Database.transactions_in_month(year, month, include_transfers=False)`**
    — currently does `WHERE t.date LIKE 'YYYY-MM%'`. Rewritten to call
@@ -64,14 +66,23 @@ that independently assume calendar-month day-counts need real changes:**
    t.date <= ?` instead. Every function built on top of this (the ~15
    listed above) is fixed automatically, with no changes of its own.
 
-2. **`daily_spend_totals(db, year, month)`** — currently does
-   `calendar.monthrange(year, month)[1]` to get "how many days in this
-   month" and buckets by literal `int(date[8:10])` (day-of-calendar-month).
-   Rewritten to use `month_bounds` for the real start/end dates, and bucket
-   by day-offset-from-`start_date` (1-indexed) instead of the literal
-   calendar day-of-month — so the heatmap still has one column per day of
-   the reporting period, correctly ordered, regardless of where in the
-   calendar month it starts.
+2. **`daily_spend_totals(db, year, month)`** is deliberately **NOT**
+   changed, and this needs to be explicit rather than assumed: its output
+   feeds `charts.draw_calendar_heatmap`, which renders a literal
+   weekday-aligned calendar grid via
+   `calendar.Calendar(firstweekday=0).monthdayscalendar(year, month)` for
+   one specific real calendar month — that's the entire point of the
+   chart (spotting weekday spending patterns, e.g. "I always overspend on
+   Fridays"). A custom reporting period spanning two calendar months has
+   no sensible weekday-grid rendering, so rebucketing this function would
+   either break the chart or produce a visualization that no longer means
+   what it claims to. **Scope decision: the Insights tab's spending
+   heatmap always shows a literal calendar month's pattern, independent of
+   `month_start_day`** — a deliberate, documented exception, not an
+   oversight. Everything else in the app (Dashboard, Budgets, every other
+   Insights card) respects the custom reporting period; only this one
+   chart stays calendar-month-shaped because its visual metaphor requires
+   it.
 
 3. **`budget_run_rate(db, year, month, today=None)`** — same
    `calendar.monthrange` dependency, for computing "days elapsed / days in
