@@ -1622,6 +1622,11 @@ class Database:
                     if r["amount"] < 0:
                         self._apply_roundup_nocommit(tx_id, r["next_date"], r["amount"])
                     posted.append((r["name"], r["next_date"], r["amount"]))
+                    if r["frequency"] == "once":
+                        # A one-off planned transaction has no next occurrence --
+                        # deactivate instead of advancing, so it posts exactly once.
+                        self.conn.execute("UPDATE recurring SET active=0 WHERE id=?", (r["id"],))
+                        break
                     new_next = self._advance_date(r["next_date"], r["frequency"],
                                                    custom_interval_months=r["custom_interval_months"])
                     self.conn.execute("UPDATE recurring SET next_date=? WHERE id=?", (new_next, r["id"]))

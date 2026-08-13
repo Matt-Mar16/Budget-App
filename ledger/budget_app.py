@@ -1861,7 +1861,7 @@ class RecurringTab(ScrollableTab):
         self.detected_rows_frame = ttk.Frame(self.detected_card, style="Card.TFrame")
         self.detected_rows_frame.pack(fill="x")
 
-        form = Card(self, title="Add Recurring Item (bill or paycheck)")
+        form = Card(self, title="Add Recurring Item (bill, paycheck, or a one-off you know is coming)")
         form.pack(fill="x", pady=(0, 10))
 
         self.name_var = tk.StringVar()
@@ -1884,7 +1884,7 @@ class RecurringTab(ScrollableTab):
         ttk.Entry(form, textvariable=self.amount_var, width=10).grid(row=1, column=3, padx=3)
         ttk.Entry(form, textvariable=self.currency_var, width=6).grid(row=1, column=4, padx=3)
         freq_combo = ttk.Combobox(form, textvariable=self.freq_var,
-                                   values=["weekly", "monthly", "yearly", "custom"],
+                                   values=["weekly", "monthly", "yearly", "custom", "once"],
                                    width=10, state="readonly")
         freq_combo.grid(row=1, column=5, padx=3)
         ttk.Entry(form, textvariable=self.next_date_var, width=12).grid(row=1, column=6, padx=3)
@@ -1901,6 +1901,14 @@ class RecurringTab(ScrollableTab):
         ttk.Entry(self.custom_interval_frame, textvariable=self.custom_interval_var, width=6).pack(
             side="left", padx=6)
         self.custom_interval_frame.grid_remove()
+
+        self.once_hint_label = ttk.Label(
+            form, text="Posts on Next Date, then deactivates itself — for a known one-off "
+                       "you don't want to forget, not a repeating bill.",
+            style="CardDim.TLabel", wraplength=700, justify="left")
+        self.once_hint_label.grid(row=2, column=0, columnspan=9, sticky="w", pady=(6, 0))
+        self.once_hint_label.grid_remove()
+
         self.freq_var.trace_add("write", lambda *a: self._update_custom_interval_visibility())
 
         list_card = Card(self, title="All Recurring Items")
@@ -1937,6 +1945,10 @@ class RecurringTab(ScrollableTab):
             self.custom_interval_frame.grid()
         else:
             self.custom_interval_frame.grid_remove()
+        if self.freq_var.get() == "once":
+            self.once_hint_label.grid()
+        else:
+            self.once_hint_label.grid_remove()
 
     def add_recurring(self):
         name = self.name_var.get().strip()

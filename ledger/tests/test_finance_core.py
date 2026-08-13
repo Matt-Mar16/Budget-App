@@ -13,7 +13,7 @@ from finance_core import (
     export_categories_editable_csv, export_investments_editable_csv,
     apply_transactions_csv, apply_accounts_csv, apply_categories_csv, apply_investments_csv,
     refresh_profile_csvs, apply_profile_csvs, month_bounds, custom_month_for_date,
-    safe_to_spend, would_exceed_budget,
+    safe_to_spend, would_exceed_budget, upcoming_bills,
 )
 
 TX_CSV_FIELDS = ["id", "date", "payee", "category", "amount", "currency", "note", "account",
@@ -460,6 +460,49 @@ def test_generate_due_recurring_advances_a_custom_frequency_item_by_n_months(tmp
     assert item2["next_date"] == "2026-09-01"
     assert item2["custom_interval_months"] == 4
     assert db.get_account(acc_id)["balance"] == pytest.approx(1000.0)
+    db.close()
+
+
+def test_generate_due_recurring_posts_a_once_item_and_deactivates_it(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 1000.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_recurring("Car Insurance Renewal", "Insurer", None, -400.0, "GBP", "once",
+                      "2026-09-15", account_id=acc_id)
+
+    posted = db.generate_due_recurring(today=datetime.date(2026, 9, 20))
+
+    assert len(posted) == 1
+    assert posted[0] == ("Car Insurance Renewal", "2026-09-15", -400.0)
+    assert db.get_account(acc_id)["balance"] == pytest.approx(600.0)
+    item = db.list_recurring()[0]
+    assert item["active"] == 0, "a 'once' item must deactivate itself after posting, not repeat"
+    assert item["next_date"] == "2026-09-15", "next_date is left as-is once inactive -- there is no next occurrence"
+    db.close()
+
+
+def test_generate_due_recurring_does_not_repost_a_deactivated_once_item(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 1000.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_recurring("Car Insurance Renewal", "Insurer", None, -400.0, "GBP", "once",
+                      "2026-09-15", account_id=acc_id)
+    db.generate_due_recurring(today=datetime.date(2026, 9, 20))
+
+    posted_again = db.generate_due_recurring(today=datetime.date(2026, 10, 1))
+
+    assert posted_again == []
+    assert db.get_account(acc_id)["balance"] == pytest.approx(600.0), "must not post twice"
+    db.close()
+
+
+def test_upcoming_bills_includes_a_once_item_within_the_window(tmp_path):
+    db = _db(tmp_path)
+    db.add_recurring("Car Insurance Renewal", "Insurer", None, -400.0, "GBP", "once", "2026-08-20")
+
+    due = upcoming_bills(db, within_days=14, today=datetime.date(2026, 8, 15))
+
+    assert any(r["name"] == "Car Insurance Renewal" for r in due)
     db.close()
 
 
