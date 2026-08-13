@@ -116,6 +116,61 @@ class Card(ttk.LabelFrame):
         super().__init__(parent, text=title, padding=14, **kw)
 
 
+def enable_drag_reorder(handles_and_rows, on_reorder):
+    """Wires drag-to-reorder onto a vertically pack()'d list of rows that
+    share one parent -- dragging a row's handle live-swaps it past
+    whichever sibling the pointer crosses (comparing against each
+    sibling's vertical midpoint) by repacking in the new order, then calls
+    on_reorder(ids_in_final_order) once when the drag ends. Reusable by
+    any tab that wants drag reordering instead of Up/Down buttons; takes
+    (handle_widget, row_widget, item_id) triples so a small grip icon can
+    be the drag target while the rest of the row's own widgets (entries,
+    buttons) keep working normally.
+    """
+    order = [row for _, row, _ in handles_and_rows]
+    item_id_by_row = {row: item_id for _, row, item_id in handles_and_rows}
+    dragging = {"row": None}
+
+    def repack():
+        for row in order:
+            row.pack_forget()
+            row.pack(fill="x", pady=5)
+
+    def on_press(row):
+        dragging["row"] = row
+
+    def on_motion(row, event):
+        if dragging["row"] is not row:
+            return
+        pointer_y = event.y_root
+        idx_row = order.index(row)
+        for other in order:
+            if other is row:
+                continue
+            idx_other = order.index(other)
+            mid = other.winfo_rooty() + other.winfo_height() // 2
+            if idx_row < idx_other and pointer_y > mid:
+                order[idx_row], order[idx_other] = order[idx_other], order[idx_row]
+                repack()
+                break
+            if idx_row > idx_other and pointer_y < mid:
+                order[idx_row], order[idx_other] = order[idx_other], order[idx_row]
+                repack()
+                break
+
+    def on_release(row):
+        if dragging["row"] is not row:
+            return
+        dragging["row"] = None
+        on_reorder([item_id_by_row[r] for r in order])
+
+    for handle, row, _ in handles_and_rows:
+        handle.configure(cursor="fleur")
+        handle.bind("<ButtonPress-1>", lambda e, r=row: on_press(r))
+        handle.bind("<B1-Motion>", lambda e, r=row: on_motion(r, e))
+        handle.bind("<ButtonRelease-1>", lambda e, r=row: on_release(r))
+
+
 class ScrollableTab(ttk.Frame):
     """Base class for tab pages: gives every tab clean vertical scrolling
     without any subclass needing to change how it builds its content.
@@ -1748,15 +1803,21 @@ class BudgetsTab(ScrollableTab):
             frame.grid(row=0, column=col, sticky="nsew", padx=6)
             self.canvas_frame.columnconfigure(col, weight=1)
             col += 1
+            drag_rows = []
             for cat in groups[kind]:
                 spent = spend_by_cat.get(cat["id"], 0.0)
                 budget = cat["monthly_budget"] or 0.0
                 row = ttk.Frame(frame, style="Card.TFrame")
                 row.pack(fill="x", pady=5)
+                header = ttk.Frame(row, style="Card.TFrame")
+                header.pack(fill="x", anchor="w")
+                handle = ttk.Label(header, text="⠿", style="CardDim.TLabel")
+                handle.pack(side="left", padx=(0, 6))
+                drag_rows.append((handle, row, cat["id"]))
                 label_text = f"{cat['name']}: {fmt_money(spent, cur)}"
                 if budget > 0:
                     label_text += f" / {fmt_money(budget, cur)}"
-                ttk.Label(row, text=label_text, style="Card.TLabel").pack(anchor="w")
+                ttk.Label(header, text=label_text, style="Card.TLabel").pack(side="left")
 
                 bar_bg = tk.Canvas(row, height=10, width=260, bg=c["grid"], highlightthickness=0)
                 bar_bg.pack(anchor="w", pady=(3, 0))
@@ -1790,12 +1851,10 @@ class BudgetsTab(ScrollableTab):
                 ttk.Button(edit_row, text="Delete",
                            command=lambda cid=cat["id"], name=cat["name"]:
                                self._delete_category(cid, name)).pack(side="left", padx=4)
-                ttk.Button(edit_row, text="▲",
-                           command=lambda cid=cat["id"]: self._move_category(cid, "up")).pack(
-                    side="left", padx=(8, 0))
-                ttk.Button(edit_row, text="▼",
-                           command=lambda cid=cat["id"]: self._move_category(cid, "down")).pack(
-                    side="left", padx=2)
+
+            if drag_rows:
+                enable_drag_reorder(
+                    drag_rows, lambda ids, k=kind: self._reorder_categories(k, ids))
 
         income_frame = Card(self.canvas_frame, title="Income")
         income_frame.grid(row=0, column=col, sticky="nsew", padx=6)
@@ -1803,21 +1862,22 @@ class BudgetsTab(ScrollableTab):
         if not groups["income"]:
             ttk.Label(income_frame, text="No income categories yet.",
                       style="CardDim.TLabel").pack(anchor="w")
+        income_drag_rows = []
         for cat in groups["income"]:
             total = income_totals.get(cat["id"], 0.0)
             row = ttk.Frame(income_frame, style="Card.TFrame")
             row.pack(fill="x", pady=5)
-            ttk.Label(row, text=f"{cat['name']}: {fmt_money(total, cur)}",
-                      style="Card.TLabel").pack(side="left")
-            ttk.Button(row, text="▼",
-                       command=lambda cid=cat["id"]: self._move_category(cid, "down")).pack(
-                side="right", padx=2)
-            ttk.Button(row, text="▲",
-                       command=lambda cid=cat["id"]: self._move_category(cid, "up")).pack(
-                side="right", padx=(4, 0))
             ttk.Button(row, text="Delete",
                        command=lambda cid=cat["id"], name=cat["name"]:
                            self._delete_category(cid, name)).pack(side="right", padx=6)
+            handle = ttk.Label(row, text="⠿", style="CardDim.TLabel")
+            handle.pack(side="left", padx=(0, 6))
+            income_drag_rows.append((handle, row, cat["id"]))
+            ttk.Label(row, text=f"{cat['name']}: {fmt_money(total, cur)}",
+                      style="Card.TLabel").pack(side="left")
+        if income_drag_rows:
+            enable_drag_reorder(
+                income_drag_rows, lambda ids: self._reorder_categories("income", ids))
 
     def _set_budget(self, cat_id, var):
         try:
@@ -1827,8 +1887,8 @@ class BudgetsTab(ScrollableTab):
         self.app.db.set_category_budget(cat_id, val)
         self.app.refresh_all()
 
-    def _move_category(self, cat_id, direction):
-        self.app.db.move_category(cat_id, direction)
+    def _reorder_categories(self, kind, ordered_category_ids):
+        self.app.db.set_category_order(kind, ordered_category_ids)
         self.app.refresh_all()
 
     def _delete_category(self, cat_id, name):

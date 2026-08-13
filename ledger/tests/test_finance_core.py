@@ -2512,68 +2512,44 @@ def test_list_categories_orders_by_kind_then_sort_order_not_name(tmp_path):
     db.close()
 
 
-def test_move_category_up_swaps_with_previous_same_kind_sibling(tmp_path):
+def test_set_category_order_applies_the_given_order(tmp_path):
     db = _db(tmp_path)
     db.add_category("Want A", "want", 0)
     db.add_category("Want B", "want", 0)
-    wants_before = [c["name"] for c in db.list_categories() if c["kind"] == "want"]
-    b_id = next(c["id"] for c in db.list_categories() if c["name"] == "Want B")
+    wants = [c for c in db.list_categories() if c["kind"] == "want"]
+    ids_reversed = [c["id"] for c in wants][::-1]
 
-    db.move_category(b_id, "up")
-
-    wants_after = [c["name"] for c in db.list_categories() if c["kind"] == "want"]
-    idx_a, idx_b = wants_before.index("Want A"), wants_before.index("Want B")
-    assert idx_b == idx_a + 1, "test setup assumption: B started right after A"
-    assert wants_after.index("Want B") == wants_after.index("Want A") - 1
-    db.close()
-
-
-def test_move_category_down_swaps_with_next_same_kind_sibling(tmp_path):
-    db = _db(tmp_path)
-    db.add_category("Want C", "want", 0)
-    db.add_category("Want D", "want", 0)
-    c_id = next(c["id"] for c in db.list_categories() if c["name"] == "Want C")
-
-    db.move_category(c_id, "down")
-
-    wants_after = [c["name"] for c in db.list_categories() if c["kind"] == "want"]
-    assert wants_after.index("Want C") == wants_after.index("Want D") + 1
-    db.close()
-
-
-def test_move_category_up_at_top_of_its_kind_is_a_noop(tmp_path):
-    db = _db(tmp_path)
-    wants_before = [c["id"] for c in db.list_categories() if c["kind"] == "want"]
-    top_id = wants_before[0]
-
-    db.move_category(top_id, "up")
+    db.set_category_order("want", ids_reversed)
 
     wants_after = [c["id"] for c in db.list_categories() if c["kind"] == "want"]
-    assert wants_after == wants_before
+    assert wants_after == ids_reversed
     db.close()
 
 
-def test_move_category_down_at_bottom_of_its_kind_is_a_noop(tmp_path):
+def test_set_category_order_can_move_an_item_multiple_positions(tmp_path):
     db = _db(tmp_path)
-    wants_before = [c["id"] for c in db.list_categories() if c["kind"] == "want"]
-    bottom_id = wants_before[-1]
+    db.add_category("Want E", "want", 0)
+    db.add_category("Want F", "want", 0)
+    db.add_category("Want G", "want", 0)
+    wants = [c["id"] for c in db.list_categories() if c["kind"] == "want"]
+    # Move the last item to the front in one call -- not possible with an
+    # adjacent-swap-only API, which is the point of this method.
+    reordered = [wants[-1]] + wants[:-1]
 
-    db.move_category(bottom_id, "down")
+    db.set_category_order("want", reordered)
 
     wants_after = [c["id"] for c in db.list_categories() if c["kind"] == "want"]
-    assert wants_after == wants_before
+    assert wants_after == reordered
     db.close()
 
 
-def test_move_category_does_not_cross_into_a_different_kind(tmp_path):
+def test_set_category_order_does_not_affect_a_different_kind(tmp_path):
     db = _db(tmp_path)
-    # The last 'need' category and the first 'want' category are adjacent
-    # in id/insertion order but must never swap into each other's kind.
-    needs = [c for c in db.list_categories() if c["kind"] == "need"]
-    last_need_id = needs[-1]["id"]
+    needs_before = [c["id"] for c in db.list_categories() if c["kind"] == "need"]
+    wants = [c["id"] for c in db.list_categories() if c["kind"] == "want"]
 
-    db.move_category(last_need_id, "down")
+    db.set_category_order("want", wants[::-1])
 
     needs_after = [c["id"] for c in db.list_categories() if c["kind"] == "need"]
-    assert needs_after[-1] == last_need_id, "moving down should not cross into 'want'"
+    assert needs_after == needs_before, "reordering 'want' must not touch 'need' rows"
     db.close()

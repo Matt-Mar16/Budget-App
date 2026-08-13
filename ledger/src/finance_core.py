@@ -566,26 +566,17 @@ class Database:
         )
         self.conn.commit()
 
-    def move_category(self, category_id, direction):
-        """Swaps this category's sort_order with its same-kind neighbor
-        immediately above (direction='up') or below (direction='down') it.
-        A no-op at either end of the kind's list."""
-        cat = self.conn.execute("SELECT * FROM categories WHERE id=?", (category_id,)).fetchone()
-        if not cat:
-            return
-        siblings = self.conn.execute(
-            "SELECT id, sort_order FROM categories WHERE kind=? ORDER BY sort_order", (cat["kind"],)
-        ).fetchall()
-        idx = next(i for i, r in enumerate(siblings) if r["id"] == category_id)
-        swap_idx = idx - 1 if direction == "up" else idx + 1
-        if swap_idx < 0 or swap_idx >= len(siblings):
-            return
-        other = siblings[swap_idx]
+    def set_category_order(self, kind, ordered_category_ids):
+        """Reassigns sort_order for every category of `kind` to match
+        ordered_category_ids (0, 1, 2, ...) -- lets a category move to any
+        position in one call, e.g. after a drag-and-drop reorder, rather
+        than needing repeated adjacent swaps. Other kinds are untouched."""
         with self.conn:
-            self.conn.execute("UPDATE categories SET sort_order=? WHERE id=?",
-                               (other["sort_order"], category_id))
-            self.conn.execute("UPDATE categories SET sort_order=? WHERE id=?",
-                               (cat["sort_order"], other["id"]))
+            for i, category_id in enumerate(ordered_category_ids):
+                self.conn.execute(
+                    "UPDATE categories SET sort_order=? WHERE id=? AND kind=?",
+                    (i, category_id, kind),
+                )
 
     def set_category_budget(self, category_id, amount):
         self.conn.execute("UPDATE categories SET monthly_budget=? WHERE id=?", (amount, category_id))
