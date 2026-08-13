@@ -3579,6 +3579,7 @@ class SettingsTab(ScrollableTab):
 
     def save_settings(self):
         db = self.app.db
+        old_month_start_day = db.get_setting("month_start_day", "1")
         db.set_setting("reporting_currency", self.reporting_currency_var.get().strip().upper() or "GBP")
         try:
             float(self.savings_target_var.get())
@@ -3604,6 +3605,10 @@ class SettingsTab(ScrollableTab):
         old_mode = db.get_setting("theme_mode", "dark")
         db.set_setting("theme_mode", self.theme_var.get())
         db.set_setting("currency_mode", self.currency_mode_var.get())
+        if db.get_setting("month_start_day", "1") != old_month_start_day:
+            # The current view was anchored under the old period definition --
+            # re-anchor it to today's period under the new one, same as goto_today().
+            self.app.view_year, self.app.view_month = custom_month_for_date(db, self.app.today)
         self.app.refresh_all()
         if self.theme_var.get() != old_mode:
             messagebox.showinfo("Theme changed", "Restart The Ledger to fully apply the new theme.")
