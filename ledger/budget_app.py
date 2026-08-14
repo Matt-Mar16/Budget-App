@@ -1101,6 +1101,78 @@ class DashboardTab(ScrollableTab):
         ttk.Button(content, text="Add Transaction", style="Accent.TButton", command=submit).pack(
             anchor="w", padx=14, pady=14)
 
+    def _refresh_needs_attention(self):
+        for w in self.needs_attention_rows_frame.winfo_children():
+            w.destroy()
+        db = self.app.db
+        cur = self.app.reporting_currency()
+
+        bills = upcoming_bills(db, within_days=14, today=self.app.today)[:4]
+        reimbursements = db.list_outstanding_reimbursements()[:4]
+        candidates = detect_recurring_candidates(db)[:4]
+
+        if not bills and not reimbursements and not candidates:
+            ttk.Label(self.needs_attention_rows_frame, text="You're all caught up.",
+                      style="CardDim.TLabel").pack(anchor="w")
+            return
+
+        if bills:
+            ttk.Label(self.needs_attention_rows_frame, text="Bills due soon",
+                      style="CardDim.TLabel").pack(anchor="w", pady=(0, 2))
+            for b in bills:
+                row = ttk.Frame(self.needs_attention_rows_frame, style="Card.TFrame")
+                row.pack(fill="x", pady=2)
+                ttk.Label(row, text=f"📅 {b['name']} ({fmt_money(b['amount'], cur)}) — "
+                                     f"{b['next_date']}", style="Card.TLabel").pack(side="left")
+                ttk.Button(row, text="Post Now",
+                           command=lambda rid=b["id"]: self._post_bill_now(rid)).pack(side="right")
+
+        if reimbursements:
+            ttk.Label(self.needs_attention_rows_frame, text="Outstanding reimbursements",
+                      style="CardDim.TLabel").pack(anchor="w", pady=(8, 2))
+            for r in reimbursements:
+                row = ttk.Frame(self.needs_attention_rows_frame, style="Card.TFrame")
+                row.pack(fill="x", pady=2)
+                ttk.Label(row, text=f"{r['owed_by']} owes {fmt_money(r['amount'], cur)} — "
+                                     f"{r['payee'] or '(no payee)'}",
+                          style="Card.TLabel").pack(side="left")
+                ttk.Button(row, text="Mark Settled",
+                           command=lambda rid=r["id"]: self._settle_reimbursement_now(rid)).pack(
+                    side="right")
+
+        if candidates:
+            ttk.Label(self.needs_attention_rows_frame, text="Detected subscriptions",
+                      style="CardDim.TLabel").pack(anchor="w", pady=(8, 2))
+            for cand in candidates:
+                row = ttk.Frame(self.needs_attention_rows_frame, style="Card.TFrame")
+                row.pack(fill="x", pady=2)
+                ttk.Label(row, text=f"{cand['payee']} — "
+                                     f"{fmt_money(cand['last_amount'], cand['last_currency'])} "
+                                     f"every ~{cand['avg_interval_days']:.0f} days",
+                          style="Card.TLabel").pack(side="left")
+                ttk.Button(row, text="Ignore",
+                           command=lambda c=cand: self._ignore_candidate_now(c)).pack(
+                    side="right", padx=(6, 0))
+                ttk.Button(row, text="Add to Recurring",
+                           command=lambda c=cand: self._add_candidate_to_recurring(c)).pack(
+                    side="right")
+
+    def _post_bill_now(self, recurring_id):
+        self.app.db.post_recurring_item(recurring_id)
+        self.app.refresh_all()
+
+    def _settle_reimbursement_now(self, reimbursement_id):
+        self.app.db.settle_reimbursement(reimbursement_id)
+        self.app.refresh_all()
+
+    def _ignore_candidate_now(self, candidate):
+        self.app.db.add_ignored_subscription(candidate["payee"])
+        self.app.refresh_all()
+
+    def _add_candidate_to_recurring(self, candidate):
+        self.app.show_page("recurring")
+        self.app.pages["recurring"]._prefill_from_candidate(candidate)
+
     def refresh(self):
         self._apply_layout()
         db = self.app.db
@@ -1263,6 +1335,8 @@ class DashboardTab(ScrollableTab):
                 self.flags_text.insert("end", "\n\n")
             self.flags_text.insert("end", text, tag)
         self.flags_text.config(state="disabled")
+
+        self._refresh_needs_attention()
 
 
 # --------------------------------------------------------------------------
