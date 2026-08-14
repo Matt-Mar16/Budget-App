@@ -4198,6 +4198,22 @@ class SettingsTab(ScrollableTab):
         ttk.Button(nav_card, text="Save Navigation", style="Accent.TButton",
                    command=self.save_nav_visibility).pack(anchor="w", pady=(8, 0))
 
+        dashboard_card = Card(self.advanced_container, title="Customize Dashboard")
+        dashboard_card.pack(fill="x", pady=(0, 10))
+        ttk.Label(dashboard_card, text="Show/hide Dashboard sections — drag their grip "
+                                        "handle (⠿) on the Dashboard itself to reorder them.",
+                  style="CardDim.TLabel").pack(anchor="w")
+        dashboard_checks_frame = ttk.Frame(dashboard_card, style="Card.TFrame")
+        dashboard_checks_frame.pack(fill="x", pady=(6, 0))
+        self.dashboard_visibility_vars = {}
+        for i, (key, label) in enumerate(DASHBOARD_SECTIONS):
+            var = tk.BooleanVar(value=True)
+            self.dashboard_visibility_vars[key] = var
+            ttk.Checkbutton(dashboard_checks_frame, text=label, variable=var).grid(
+                row=i // 3, column=i % 3, sticky="w", padx=6, pady=2)
+        ttk.Button(dashboard_card, text="Save Dashboard Layout", style="Accent.TButton",
+                   command=self.save_dashboard_visibility).pack(anchor="w", pady=(8, 0))
+
         ignored_subs_card = Card(self.advanced_container, title="Ignored Subscriptions")
         ignored_subs_card.pack(fill="x", pady=(0, 10))
         ttk.Label(ignored_subs_card,
@@ -4334,6 +4350,14 @@ class SettingsTab(ScrollableTab):
         if getattr(self.app, "current_page", None) in hidden:
             self.app.show_page("dashboard")
 
+    def save_dashboard_visibility(self):
+        db = self.app.db
+        layout = resolve_dashboard_layout(db)
+        visibility = {key: var.get() for key, var in self.dashboard_visibility_vars.items()}
+        new_layout = [{"key": e["key"], "visible": visibility[e["key"]]} for e in layout]
+        db.set_dashboard_layout(new_layout)
+        self.app.refresh_all()
+
     def set_fx_rate(self):
         code = self.fx_currency_var.get().strip().upper()
         try:
@@ -4360,6 +4384,11 @@ class SettingsTab(ScrollableTab):
         hidden_now = get_hidden_nav_tabs(db)
         for key, var in self.nav_visibility_vars.items():
             var.set(key not in hidden_now)
+
+        dashboard_layout_now = resolve_dashboard_layout(db)
+        for entry in dashboard_layout_now:
+            if entry["key"] in self.dashboard_visibility_vars:
+                self.dashboard_visibility_vars[entry["key"]].set(entry["visible"])
 
         self.signed_in_label.config(text=f"Signed in as: {self.app.profile['name']}")
 
