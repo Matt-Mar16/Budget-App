@@ -536,6 +536,89 @@ def visible_nav_groups(nav_groups, hidden_keys):
     return out
 
 
+DASHBOARD_SECTIONS = [
+    ("hero", "Safe to Spend"),
+    ("metrics", "Key Metrics"),
+    ("quick_actions", "Quick Actions"),
+    ("charts", "Charts (Spend Split & Trend)"),
+    ("needs_attention", "Needs Attention"),
+    ("flags", "Flags & Nudges"),
+]
+DASHBOARD_SECTION_KEYS = [key for key, _ in DASHBOARD_SECTIONS]
+
+
+def resolve_dashboard_layout(db):
+    """Reconciles the saved dashboard_layout setting against the currently
+    known section keys: drops any saved key no longer in DASHBOARD_SECTIONS
+    (e.g. a section removed in a later version), appends any known key
+    missing from the saved list (e.g. a section added later) as visible, at
+    the end. Returns a list of {"key", "visible"} covering every key in
+    DASHBOARD_SECTION_KEYS, in display order. Pure function so it's
+    unit-testable without Tkinter, matching get_hidden_nav_tabs/
+    visible_nav_groups above."""
+    saved = db.get_dashboard_layout()
+    known = set(DASHBOARD_SECTION_KEYS)
+    result = [entry for entry in saved if entry["key"] in known]
+    present = {entry["key"] for entry in result}
+    for key in DASHBOARD_SECTION_KEYS:
+        if key not in present:
+            result.append({"key": key, "visible": True})
+    return result
+
+
+def submit_new_transaction(app, date, payee, category_name, amount_raw, currency, note,
+                            account_name, tag_names_raw="", confirm_over_budget=None):
+    """Validates and writes a new transaction -- the exact logic
+    TransactionsTab's inline Add form uses, extracted so the Dashboard's
+    Add Transaction popup (see DashboardTab.open_add_transaction_dialog)
+    can share it instead of re-implementing validation. Returns
+    (ok, error_message); error_message is None on success. On success the
+    transaction (and any tags) has already been written to app.db -- the
+    caller still calls app.refresh_all() afterward, same as before.
+    confirm_over_budget defaults to messagebox.askyesno but can be swapped
+    for a plain callable in tests, so this function needs no live Tkinter
+    event loop to test."""
+    if confirm_over_budget is None:
+        confirm_over_budget = messagebox.askyesno
+
+    try:
+        datetime.date.fromisoformat(date)
+    except ValueError:
+        return False, "Please use YYYY-MM-DD format."
+    try:
+        amount = float(amount_raw)
+    except ValueError:
+        return False, "Amount must be a number (negative for expenses)."
+
+    categories_by_name = {c["name"]: c["id"] for c in app.db.list_categories()}
+    accounts_by_name = {a["name"]: a for a in app.db.list_accounts()}
+    cat_id = categories_by_name.get(category_name.strip())
+    account = accounts_by_name.get(account_name.strip())
+    account_id = account["id"] if account else None
+    currency = currency.strip().upper() or app.reporting_currency()
+    payee = payee.strip()
+    note = note.strip()
+
+    if cat_id and amount < 0:
+        from finance_core import would_exceed_budget
+        exceeds, spent_after, budget = would_exceed_budget(app.db, cat_id, amount, currency)
+        if exceeds:
+            cur = app.reporting_currency()
+            proceed = confirm_over_budget(
+                "Over budget",
+                f"This would bring '{category_name}' spending to {fmt_money(spent_after, cur)}, "
+                f"over its {fmt_money(budget, cur)} monthly budget. Add it anyway?")
+            if not proceed:
+                return False, None
+
+    tx_id = app.db.add_transaction(date, payee, cat_id, amount, currency, note,
+                                    account_id=account_id)
+    tag_names = [t.strip() for t in tag_names_raw.split(",") if t.strip()]
+    if tag_names:
+        app.db.set_transaction_tags(tx_id, tag_names)
+    return True, None
+
+
 class App(tk.Tk):
     def __init__(self, profile):
         super().__init__()
