@@ -965,6 +965,11 @@ class DashboardTab(ScrollableTab):
         qa_card.pack(fill="x", pady=(0, 10))
         self.quick_actions_row = ttk.Frame(qa_card, style="Card.TFrame")
         self.quick_actions_row.pack(fill="x")
+        ttk.Button(self.quick_actions_row, text="+ Add Transaction", style="Good.TButton",
+                   command=self.open_add_transaction_dialog).pack(side="left")
+        ttk.Button(self.quick_actions_row, text="Transfer Between Accounts…", style="Accent.TButton",
+                   command=lambda: self.app.pages["accounts"].open_transfer_dialog()).pack(
+            side="left", padx=(8, 0))
 
         # Charts row: allocation donut + 6-month trend bar chart
         charts_section = start_section("charts")
@@ -1045,6 +1050,56 @@ class DashboardTab(ScrollableTab):
         new_layout = [{"key": k, "visible": True} for k in ordered_keys] + hidden_entries
         self.app.db.set_dashboard_layout(new_layout)
         self._apply_layout()
+
+    def open_add_transaction_dialog(self):
+        win, content = make_scrollable_toplevel(self, "Add Transaction", "420x460")
+        cats = [c["name"] for c in self.app.db.list_categories()]
+        accounts = [a["name"] for a in self.app.db.list_accounts()]
+
+        ttk.Label(content, text="Date (YYYY-MM-DD)", style="TLabel").pack(anchor="w", padx=14, pady=(14, 2))
+        date_var = tk.StringVar(value=self.app.today.isoformat())
+        ttk.Entry(content, textvariable=date_var).pack(fill="x", padx=14)
+
+        ttk.Label(content, text="Payee", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        payee_var = tk.StringVar()
+        ttk.Entry(content, textvariable=payee_var).pack(fill="x", padx=14)
+
+        ttk.Label(content, text="Category", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        category_var = tk.StringVar()
+        ttk.Combobox(content, textvariable=category_var, values=cats, state="readonly").pack(
+            fill="x", padx=14)
+
+        ttk.Label(content, text="Amount (negative for expenses)", style="TLabel").pack(
+            anchor="w", padx=14, pady=(10, 2))
+        amount_var = tk.StringVar()
+        ttk.Entry(content, textvariable=amount_var).pack(fill="x", padx=14)
+
+        ttk.Label(content, text="Currency", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        currency_var = tk.StringVar(value=self.app.reporting_currency())
+        ttk.Entry(content, textvariable=currency_var).pack(fill="x", padx=14)
+
+        ttk.Label(content, text="Account", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        account_var = tk.StringVar()
+        ttk.Combobox(content, textvariable=account_var, values=accounts, state="readonly").pack(
+            fill="x", padx=14)
+
+        ttk.Label(content, text="Note", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        note_var = tk.StringVar()
+        ttk.Entry(content, textvariable=note_var).pack(fill="x", padx=14)
+
+        def submit():
+            ok, error = submit_new_transaction(
+                self.app, date_var.get(), payee_var.get(), category_var.get(),
+                amount_var.get(), currency_var.get(), note_var.get(), account_var.get())
+            if not ok:
+                if error:
+                    messagebox.showerror("Invalid entry", error)
+                return
+            self.app.refresh_all()
+            win.destroy()
+
+        ttk.Button(content, text="Add Transaction", style="Accent.TButton", command=submit).pack(
+            anchor="w", padx=14, pady=14)
 
     def refresh(self):
         self._apply_layout()
