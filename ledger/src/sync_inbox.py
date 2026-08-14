@@ -1,16 +1,8 @@
 import argparse
-import getpass
 
 import profiles
 from finance_core import Database
 from inbox_sync import build_inbox_workbook, sync_inbox
-
-
-def _resolve_db_path(slug):
-    if profiles.is_profile_locked(slug):
-        password = getpass.getpass(f"Password for profile '{slug}': ")
-        return profiles.unlock_profile(slug, password)
-    return profiles.db_path_for(slug)
 
 
 def main():
@@ -25,8 +17,7 @@ def main():
                          help="(Re)generate the inbox workbook from the profile's current accounts/categories")
     args = parser.parse_args()
 
-    db_path = _resolve_db_path(args.profile)
-    db = Database(db_path)
+    db = Database(profiles.db_path_for(args.profile))
     try:
         if args.build:
             build_inbox_workbook(db, args.excel)

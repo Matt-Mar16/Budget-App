@@ -8,9 +8,8 @@ the real detail.
 A local-first desktop budgeting app (Tkinter + SQLite, Python stdlib only —
 nothing to install, nothing leaves your machine). Multiple isolated
 profiles, multi-currency accounts, budgets/envelopes, recurring bills,
-cashback and round-up rewards, a debt payoff planner, investment tracking
-with UK capital-gains estimates, spend forecasting, and a phone-entry
-bridge for logging transactions on the go.
+cashback and round-up rewards, a debt payoff planner, spend forecasting,
+and a phone-entry bridge for logging transactions on the go.
 
 ```
 cd ledger

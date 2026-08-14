@@ -40,7 +40,6 @@ Worth split, the Forecast tab, and more):
 import sys
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
-import csv
 import datetime
 import os
 
@@ -53,8 +52,8 @@ from finance_core import (
     simulate_payoff, life_energy_hours,
     monthly_history, spend_by_kind, upcoming_bills, export_transactions_csv,
     export_transactions_csv_full, export_account_statement_csv,
-    net_worth_breakdown, credit_utilization, investment_summary,
-    upcoming_card_payments, investment_projection, investment_projection_with_bands,
+    net_worth_breakdown, credit_utilization,
+    upcoming_card_payments,
     budget_run_rate, categories_over_threshold, top_payees, daily_spend_totals,
     detect_recurring_candidates, refresh_profile_csvs, apply_profile_csvs,
     income_by_category, custom_month_for_date, month_bounds,
@@ -396,18 +395,6 @@ class ProfileLauncher(tk.Tk):
         self._import_path(path)
 
     def _open(self, profile):
-        if profile.get("locked"):
-            password = simpledialog.askstring(
-                "Locked profile", f"Enter the password for '{profile['name']}':",
-                show="*", parent=self)
-            if not password:
-                return
-            try:
-                profiles.unlock_profile(profile["slug"], password)
-            except RuntimeError as e:
-                messagebox.showerror("Couldn't unlock", str(e))
-                return
-            profile = next((p for p in profiles.list_profiles() if p["slug"] == profile["slug"]), profile)
         profiles.touch_profile(profile["slug"])
         self.destroy()
         app = App(profile)
@@ -431,8 +418,6 @@ NAV_GROUPS = [
         ("debt", "📉", "Debt Planner"),
         ("accounts", "🏦", "Accounts"),
         ("networth", "📈", "Net Worth / FI"),
-        ("investments", "📊", "Investments"),
-        ("tax", "🧮", "Tax"),
         ("rewards", "🐷", "Rewards"),
     ]),
 ]
@@ -589,8 +574,6 @@ class App(tk.Tk):
             "debt": DebtPlannerTab(self.container, self),
             "accounts": AccountsTab(self.container, self),
             "networth": NetWorthTab(self.container, self),
-            "investments": InvestmentsTab(self.container, self),
-            "tax": TaxTab(self.container, self),
             "insights": InsightsTab(self.container, self),
             "forecast": ForecastTab(self.container, self),
             "rewards": RewardsTab(self.container, self),
@@ -2312,7 +2295,6 @@ class DebtPlannerTab(ScrollableTab):
 ACCOUNT_TYPE_OPTIONS = [
     ("Cash / Bank", "cash", "asset"),
     ("Credit Card", "credit_card", "liability"),
-    ("Investment", "investment", "asset"),
     ("Loan", "loan", "liability"),
     ("Other Asset", "other", "asset"),
     ("Other Liability", "other", "liability"),
@@ -2343,8 +2325,6 @@ class AccountsTab(ScrollableTab):
         self.acc_cashback_rate = tk.StringVar(value="0")
         self.acc_cashback_cap = tk.StringVar(value="0")
         self.acc_due_day = tk.StringVar(value="1")
-        self.acc_expected_return = tk.StringVar(value="5")
-        self.acc_monthly_contribution = tk.StringVar(value="0")
 
         ttk.Label(form, text="Name", style="CardDim.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Entry(form, textvariable=self.acc_name, width=16).grid(row=1, column=0, padx=4)
@@ -2376,21 +2356,6 @@ class AccountsTab(ScrollableTab):
         ttk.Label(self.extra_frame, text="Payment due day (1-28)", style="CardDim.TLabel").grid(
             row=0, column=3, sticky="w")
         ttk.Entry(self.extra_frame, textvariable=self.acc_due_day, width=10).grid(row=1, column=3)
-
-        self.inv_extra_frame = ttk.Frame(form, style="Card.TFrame")
-        self.inv_extra_frame.grid(row=2, column=0, columnspan=6, sticky="w", pady=(8, 0))
-        ttk.Label(self.inv_extra_frame, text="Expected annual return %", style="CardDim.TLabel").grid(
-            row=0, column=0, sticky="w")
-        ttk.Entry(self.inv_extra_frame, textvariable=self.acc_expected_return, width=10).grid(
-            row=1, column=0, padx=(0, 12))
-        ttk.Label(self.inv_extra_frame, text="Planned monthly contribution", style="CardDim.TLabel").grid(
-            row=0, column=1, sticky="w")
-        ttk.Entry(self.inv_extra_frame, textvariable=self.acc_monthly_contribution, width=12).grid(
-            row=1, column=1)
-        ttk.Label(self.inv_extra_frame, text="(used only for the illustrative growth projection below — "
-                                              "not a promise of future returns)",
-                  style="CardDim.TLabel", wraplength=380, justify="left").grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
         self._update_extra_fields()
 
         list_card = Card(self, title="Accounts")
@@ -2452,10 +2417,6 @@ class AccountsTab(ScrollableTab):
             self.extra_frame.grid()
         else:
             self.extra_frame.grid_remove()
-        if subtype == "investment":
-            self.inv_extra_frame.grid()
-        else:
-            self.inv_extra_frame.grid_remove()
 
     def add_account(self):
         try:
@@ -2478,23 +2439,11 @@ class AccountsTab(ScrollableTab):
                 due_day = min(max(due_day, 1), 28)
             except ValueError:
                 due_day = None
-        expected_return, monthly_contribution = 0.0, 0.0
-        if subtype == "investment":
-            try:
-                expected_return = float(self.acc_expected_return.get())
-            except ValueError:
-                expected_return = 0.0
-            try:
-                monthly_contribution = float(self.acc_monthly_contribution.get())
-            except ValueError:
-                monthly_contribution = 0.0
         liquid = self.acc_liquid.get() or subtype == "cash"
         self.app.db.add_account(name, kind, balance,
                                  self.acc_currency.get().strip().upper() or "GBP",
                                  liquid, subtype=subtype, credit_limit=credit_limit,
                                  cashback_rate=cashback_rate, due_day=due_day,
-                                 expected_return_pct=expected_return,
-                                 monthly_contribution=monthly_contribution,
                                  cashback_monthly_cap=cashback_cap)
         self.acc_name.set("")
         self.acc_balance.set("")
@@ -2544,7 +2493,6 @@ class AccountsTab(ScrollableTab):
         ttk.Checkbutton(win, text="Liquid", variable=liquid_var).pack(anchor="w", padx=14, pady=(10, 0))
 
         credit_limit_var = cashback_rate_var = cashback_cap_var = due_day_var = None
-        expected_return_var = monthly_contribution_var = volatility_var = None
 
         if acc["subtype"] == "credit_card":
             ttk.Label(win, text="Credit limit", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
@@ -2564,22 +2512,6 @@ class AccountsTab(ScrollableTab):
                 anchor="w", padx=14, pady=(10, 2))
             due_day_var = tk.StringVar(value=str(acc["due_day"] or ""))
             ttk.Entry(win, textvariable=due_day_var).pack(fill="x", padx=14)
-
-        if acc["subtype"] == "investment":
-            ttk.Label(win, text="Expected annual return %", style="TLabel").pack(
-                anchor="w", padx=14, pady=(10, 2))
-            expected_return_var = tk.StringVar(value=str(acc["expected_return_pct"] or 0))
-            ttk.Entry(win, textvariable=expected_return_var).pack(fill="x", padx=14)
-
-            ttk.Label(win, text="Planned monthly contribution", style="TLabel").pack(
-                anchor="w", padx=14, pady=(10, 2))
-            monthly_contribution_var = tk.StringVar(value=str(acc["monthly_contribution"] or 0))
-            ttk.Entry(win, textvariable=monthly_contribution_var).pack(fill="x", padx=14)
-
-            ttk.Label(win, text="Return volatility % (for the projection range)", style="TLabel").pack(
-                anchor="w", padx=14, pady=(10, 2))
-            volatility_var = tk.StringVar(value=str(acc["return_volatility_pct"] or 0))
-            ttk.Entry(win, textvariable=volatility_var).pack(fill="x", padx=14)
 
         def do_save():
             name = name_var.get().strip()
@@ -2619,21 +2551,6 @@ class AccountsTab(ScrollableTab):
                         details["due_day"] = min(max(int(raw), 1), 28)
                     except ValueError:
                         pass
-            if expected_return_var is not None:
-                try:
-                    details["expected_return_pct"] = float(expected_return_var.get())
-                except ValueError:
-                    pass
-            if monthly_contribution_var is not None:
-                try:
-                    details["monthly_contribution"] = float(monthly_contribution_var.get())
-                except ValueError:
-                    pass
-            if volatility_var is not None:
-                try:
-                    details["return_volatility_pct"] = float(volatility_var.get())
-                except ValueError:
-                    pass
             if details:
                 self.app.db.update_account_details(account_id, **details)
 
@@ -2940,8 +2857,7 @@ class AccountsTab(ScrollableTab):
 
     def _set_cashback_auto_invest(self, account_id):
         jar = self.app.db.get_or_create_roundup_jar()
-        investments = [a for a in self.app.db.list_accounts() if a["subtype"] == "investment"]
-        targets = [jar] + investments
+        targets = [jar]
 
         win = tk.Toplevel(self)
         win.title("Cashback Destination")
@@ -3053,7 +2969,7 @@ class AccountsTab(ScrollableTab):
 
 
 # --------------------------------------------------------------------------
-# Net Worth / FI overview — totals, charts, investments summary
+# Net Worth / FI overview — totals and charts
 # --------------------------------------------------------------------------
 
 class NetWorthTab(ScrollableTab):
@@ -3083,13 +2999,6 @@ class NetWorthTab(ScrollableTab):
         self.fi_ring = tk.Canvas(ring_card, height=140, highlightthickness=0, bg=c["card"])
         self.fi_ring.pack(fill="both", expand=True)
 
-        inv_row = ttk.Frame(self)
-        inv_row.pack(fill="x", pady=(0, 10))
-        self.inv_card = Card(inv_row, title="Investments")
-        self.inv_card.pack(fill="x")
-        self.inv_inner = ttk.Frame(self.inv_card, style="Card.TFrame")
-        self.inv_inner.pack(fill="x")
-
         charts_row = ttk.Frame(self)
         charts_row.pack(fill="both", expand=True)
         charts_row.columnconfigure(0, weight=1)
@@ -3105,52 +3014,10 @@ class NetWorthTab(ScrollableTab):
         self.trend_canvas = tk.Canvas(trend_card, height=200, highlightthickness=0, bg=c["card"])
         self.trend_canvas.pack(fill="both", expand=True)
 
-        projection_card = Card(self, title="Investment Growth Projection (illustrative, 10 years)")
-        projection_card.pack(fill="both", expand=True, pady=(10, 0))
-        self.projection_canvas = tk.Canvas(projection_card, height=170, highlightthickness=0, bg=c["card"])
-        self.projection_canvas.pack(fill="both", expand=True)
-
     def record_snapshot(self):
         nw = net_worth(self.app.db)
         self.app.db.record_networth_snapshot(self.app.today.isoformat(), nw)
         self.refresh()
-
-    def _ask_amount(self, title, prompt):
-        return simpledialog.askfloat(title, prompt, parent=self)
-
-    def _add_contribution(self, account_id):
-        amt = self._ask_amount("Add Contribution", "How much are you adding?")
-        if amt:
-            self.app.db.add_investment_contribution(account_id, amt)
-            self.app.refresh_all()
-
-    def _update_value(self, account_id, current_balance):
-        val = self._ask_amount("Update Market Value", "New current value of this account:")
-        if val is not None:
-            self.app.db.update_investment_value(account_id, val)
-            self.app.refresh_all()
-
-    def _set_projection_assumptions(self, account_id):
-        rate = simpledialog.askfloat("Expected Annual Return %", "Assumed annual return, e.g. 5 for 5%:",
-                                      parent=self, minvalue=-50, maxvalue=100)
-        if rate is None:
-            return
-        contrib = simpledialog.askfloat("Planned Monthly Contribution",
-                                         "How much do you plan to add each month?",
-                                         parent=self, minvalue=0)
-        if contrib is None:
-            contrib = 0.0
-        volatility = simpledialog.askfloat(
-            "Return Volatility %",
-            "Assumed annual volatility (stdev of returns), e.g. 15 for a typical equity fund. "
-            "Used to draw a low/high illustrative range around the projection, not just a single line:",
-            parent=self, minvalue=0, maxvalue=100)
-        if volatility is None:
-            volatility = 0.0
-        self.app.db.update_account_details(account_id, expected_return_pct=rate,
-                                            monthly_contribution=contrib,
-                                            return_volatility_pct=volatility)
-        self.app.refresh_all()
 
     def refresh(self):
         c = self.app.c
@@ -3172,46 +3039,8 @@ class NetWorthTab(ScrollableTab):
             self.fi_label.config(text="Log some expenses this month to estimate your FI number.")
             charts.draw_progress_ring(self.fi_ring, 0, c, label="of FI number")
 
-        # investments
-        for w in self.inv_inner.winfo_children():
-            w.destroy()
-        invs = investment_summary(self.app.db)
-        if not invs:
-            ttk.Label(self.inv_inner, text="No investment accounts yet — add one on the Accounts tab "
-                                            "to track growth.",
-                      style="CardDim.TLabel").pack(anchor="w")
-        else:
-            for entry in invs:
-                a = entry["account"]
-                row = ttk.Frame(self.inv_inner, style="Card.TFrame")
-                row.pack(fill="x", pady=6)
-                growth_style = "Good.TLabel" if entry["growth"] >= 0 else "Bad.TLabel"
-                top = ttk.Frame(row, style="Card.TFrame")
-                top.pack(fill="x")
-                ttk.Label(top, text=f"{a['name']}: {fmt_money(entry['balance'], cur)}",
-                          style="Card.TLabel", font=theme.Fonts.body_bold).pack(side="left")
-                ttk.Label(top, text=f"  ({'+' if entry['growth'] >= 0 else ''}{fmt_money(entry['growth'], cur)}, "
-                                     f"{entry['growth_pct']*100:+.1f}%)",
-                          style=growth_style).pack(side="left")
-                ttk.Label(row, text=f"Contributed: {fmt_money(entry['contributions'], cur)}",
-                          style="CardDim.TLabel").pack(anchor="w")
-                assumptions = f"Assuming {a['expected_return_pct'] or 0:.1f}%/yr"
-                if a["monthly_contribution"]:
-                    assumptions += f" + {fmt_money(a['monthly_contribution'], cur)}/mo"
-                ttk.Label(row, text=assumptions, style="CardDim.TLabel").pack(anchor="w")
-                btn_row = ttk.Frame(row, style="Card.TFrame")
-                btn_row.pack(anchor="w", pady=(4, 0))
-                ttk.Button(btn_row, text="Add Contribution",
-                           command=lambda aid=a["id"]: self._add_contribution(aid)).pack(side="left")
-                ttk.Button(btn_row, text="Update Market Value",
-                           command=lambda aid=a["id"], b=entry["balance"]: self._update_value(aid, b)).pack(
-                    side="left", padx=6)
-                ttk.Button(btn_row, text="Set Growth Assumptions",
-                           command=lambda aid=a["id"]: self._set_projection_assumptions(aid)).pack(
-                    side="left", padx=6)
-
         breakdown = net_worth_breakdown(self.app.db)
-        segment_colors = {"cash": c["good"], "credit_card": c["bad"], "investment": c["accent"],
+        segment_colors = {"cash": c["good"], "credit_card": c["bad"],
                            "loan": c["warn"], "other": c["text_faint"]}
         segments = [(k.replace("_", " ").title(), abs(v), segment_colors.get(k, c["text_faint"]))
                     for k, v in breakdown.items() if abs(v) > 0.01]
@@ -3223,268 +3052,6 @@ class NetWorthTab(ScrollableTab):
         labels = [s["date"][5:] for s in snaps]
         charts.draw_line_chart(self.trend_canvas, values, labels, c,
                                 unit_fmt=lambda v: f"{v:,.0f}")
-
-        proj_labels, proj_mid, proj_low, proj_high = investment_projection_with_bands(self.app.db, years=10)
-        charts.draw_band_chart(self.projection_canvas, proj_mid, proj_low, proj_high, proj_labels, c,
-                                unit_fmt=lambda v: f"{v:,.0f}")
-
-
-# --------------------------------------------------------------------------
-# Investments — per-security buy/sell lots, Section 104 pooling, capital gains
-# --------------------------------------------------------------------------
-
-SECURITY_IMPORT_COLUMNS = ["Date", "Security", "Action", "Quantity", "Price", "Fees", "Note"]
-
-
-class InvestmentsTab(ScrollableTab):
-    def __init__(self, parent, app: App):
-        super().__init__(parent, app)
-        self.app = app
-        self._build()
-
-    def _investment_accounts(self):
-        return [a for a in self.app.db.list_accounts() if a["subtype"] == "investment"]
-
-    def _build(self):
-        form = Card(self, title="Add Security Transaction")
-        form.pack(fill="x", pady=(0, 10))
-
-        accounts = self._investment_accounts()
-        self.tx_account = tk.StringVar(value=accounts[0]["name"] if accounts else "")
-        self.tx_security = tk.StringVar()
-        self.tx_action = tk.StringVar(value="buy")
-        self.tx_quantity = tk.StringVar()
-        self.tx_price = tk.StringVar()
-        self.tx_fees = tk.StringVar(value="0")
-        self.tx_date = tk.StringVar(value=self.app.today.isoformat())
-
-        ttk.Label(form, text="Account", style="CardDim.TLabel").grid(row=0, column=0, sticky="w")
-        self.account_combo = ttk.Combobox(form, textvariable=self.tx_account,
-                                           values=[a["name"] for a in accounts], width=16, state="readonly")
-        self.account_combo.grid(row=1, column=0, padx=4)
-
-        ttk.Label(form, text="Security", style="CardDim.TLabel").grid(row=0, column=1, sticky="w")
-        ttk.Entry(form, textvariable=self.tx_security, width=12).grid(row=1, column=1, padx=4)
-
-        ttk.Label(form, text="Action", style="CardDim.TLabel").grid(row=0, column=2, sticky="w")
-        ttk.Combobox(form, textvariable=self.tx_action, values=["buy", "sell"], width=6,
-                     state="readonly").grid(row=1, column=2, padx=4)
-
-        ttk.Label(form, text="Quantity", style="CardDim.TLabel").grid(row=0, column=3, sticky="w")
-        ttk.Entry(form, textvariable=self.tx_quantity, width=10).grid(row=1, column=3, padx=4)
-
-        ttk.Label(form, text="Price/unit", style="CardDim.TLabel").grid(row=0, column=4, sticky="w")
-        ttk.Entry(form, textvariable=self.tx_price, width=10).grid(row=1, column=4, padx=4)
-
-        ttk.Label(form, text="Fees", style="CardDim.TLabel").grid(row=0, column=5, sticky="w")
-        ttk.Entry(form, textvariable=self.tx_fees, width=8).grid(row=1, column=5, padx=4)
-
-        ttk.Label(form, text="Date (YYYY-MM-DD)", style="CardDim.TLabel").grid(row=0, column=6, sticky="w")
-        ttk.Entry(form, textvariable=self.tx_date, width=12).grid(row=1, column=6, padx=4)
-
-        ttk.Button(form, text="Add", style="Accent.TButton", command=self.add_transaction).grid(
-            row=1, column=7, padx=8)
-
-        import_card = Card(self, title="Import Past Transactions from CSV")
-        import_card.pack(fill="x", pady=(0, 10))
-        ttk.Label(import_card, wraplength=760, justify="left", style="CardDim.TLabel",
-                  text=f"Expected columns: {', '.join(SECURITY_IMPORT_COLUMNS)} (Date as YYYY-MM-DD, "
-                       "Action as buy/sell, Fees and Note optional). Excel/PDF import isn't built yet — "
-                       "export your broker history to CSV first.").pack(anchor="w")
-        ttk.Button(import_card, text="Choose CSV File…", command=self.import_csv).pack(anchor="w", pady=(8, 0))
-
-        self.holdings_frame = ttk.Frame(self)
-        self.holdings_frame.pack(fill="x", pady=(0, 10))
-
-        self.gains_frame = ttk.Frame(self)
-        self.gains_frame.pack(fill="x", pady=(0, 10))
-
-    def add_transaction(self):
-        accounts = {a["name"]: a["id"] for a in self._investment_accounts()}
-        account_id = accounts.get(self.tx_account.get())
-        security = self.tx_security.get().strip().upper()
-        if not account_id or not security:
-            messagebox.showerror("Error", "Choose an account and enter a security.")
-            return
-        try:
-            quantity = float(self.tx_quantity.get())
-            price = float(self.tx_price.get())
-            fees = float(self.tx_fees.get() or 0)
-        except ValueError:
-            messagebox.showerror("Error", "Quantity, price and fees must be numbers.")
-            return
-        try:
-            self.app.db.add_security_transaction(
-                account_id, security, self.tx_date.get().strip(), self.tx_action.get(), quantity, price,
-                fees=fees)
-        except (ValueError, Exception) as e:
-            messagebox.showerror("Error", str(e))
-            return
-        self.tx_security.set("")
-        self.tx_quantity.set("")
-        self.tx_price.set("")
-        self.tx_fees.set("0")
-        self.app.refresh_all()
-
-    def import_csv(self):
-        accounts = {a["name"]: a["id"] for a in self._investment_accounts()}
-        if not accounts:
-            messagebox.showinfo("Import", "Add an Investment account on the Net Worth tab first.")
-            return
-        account_id = accounts.get(self.tx_account.get()) or next(iter(accounts.values()))
-
-        path = filedialog.askopenfilename(title="Import security transactions",
-                                           filetypes=[("CSV files", "*.csv")])
-        if not path:
-            return
-
-        with open(path, newline="", encoding="utf-8-sig") as f:
-            rows = list(csv.DictReader(f))
-
-        errors = []
-        parsed = []
-        for i, row in enumerate(rows, start=2):  # header is row 1
-            try:
-                date = row["Date"].strip()
-                security = row["Security"].strip().upper()
-                action = row["Action"].strip().lower()
-                quantity = float(row["Quantity"])
-                price = float(row["Price"])
-                fees = float(row["Fees"]) if row.get("Fees") else 0.0
-                note = row.get("Note", "") or ""
-                if action not in ("buy", "sell"):
-                    raise ValueError(f"Action must be 'buy' or 'sell', got {action!r}")
-                parsed.append((date, security, action, quantity, price, fees, note))
-            except (KeyError, ValueError) as e:
-                errors.append(f"Row {i}: {e}")
-
-        if errors:
-            messagebox.showerror("Import failed — nothing was imported",
-                                  "Fix these rows and try again:\n\n" + "\n".join(errors[:20]))
-            return
-
-        for date, security, action, quantity, price, fees, note in parsed:
-            self.app.db.add_security_transaction(account_id, security, date, action, quantity, price,
-                                                   fees=fees, note=note)
-
-        messagebox.showinfo("Import complete", f"Imported {len(parsed)} transaction(s).")
-        self.app.refresh_all()
-
-    def refresh(self):
-        accounts = self._investment_accounts()
-        self.account_combo.config(values=[a["name"] for a in accounts])
-        if not self.tx_account.get() and accounts:
-            self.tx_account.set(accounts[0]["name"])
-
-        for w in self.holdings_frame.winfo_children():
-            w.destroy()
-        ttk.Label(self.holdings_frame, text="Current Holdings", style="H2.TLabel",
-                  font=theme.Fonts.body_bold).pack(anchor="w", pady=(0, 6))
-        cur = self.app.reporting_currency()
-        any_holdings = False
-        for acc in accounts:
-            for row in self.app.db.list_securities(acc["id"]):
-                qty, cost, avg_cost = self.app.db.security_pool_state(acc["id"], row["security"])
-                if qty <= 0:
-                    continue
-                any_holdings = True
-                card = Card(self.holdings_frame, title=f"{row['security']} — {acc['name']}")
-                card.pack(fill="x", pady=4)
-                ttk.Label(card, text=f"{qty:,.4f} units  ·  avg cost {fmt_money(avg_cost, cur)}/unit  ·  "
-                                      f"pool cost {fmt_money(cost, cur)}",
-                          style="Card.TLabel").pack(anchor="w")
-        if not any_holdings:
-            ttk.Label(self.holdings_frame, text="No open holdings yet — add a buy above.",
-                      style="CardDim.TLabel").pack(anchor="w")
-
-        for w in self.gains_frame.winfo_children():
-            w.destroy()
-        ttk.Label(self.gains_frame, text="Realized Gains (this UK tax year)", style="H2.TLabel",
-                  font=theme.Fonts.body_bold).pack(anchor="w", pady=(0, 6))
-        tax_year_start = uk_tax_year_start(self.app.today)
-        result = self.app.db.realized_gains_for_uk_tax_year(tax_year_start)
-        card = Card(self.gains_frame, title=f"Tax year {result['tax_year']}")
-        card.pack(fill="x", pady=4)
-        ttk.Label(card, text=f"Net realized gain: {fmt_money(result['total_gain'], cur)} across "
-                              f"{len(result['sells'])} disposal(s)", style="Card.TLabel").pack(anchor="w")
-        for s in result["sells"]:
-            ttk.Label(card, text=f"  {s['date']}  {s['security']} ({s['account_name']})  "
-                                  f"{fmt_money(s['realized_gain'] or 0, cur)}",
-                      style="CardDim.TLabel").pack(anchor="w")
-
-
-def uk_tax_year_start(as_of):
-    """The UK tax year is 6 Apr -> 5 Apr. Returns the starting year of the
-    tax year `as_of` falls in, e.g. 2026-05-01 -> 2026 (the 2026/27 year),
-    2026-02-01 -> 2025 (still the 2025/26 year, since it's before 6 Apr)."""
-    if (as_of.month, as_of.day) >= (4, 6):
-        return as_of.year
-    return as_of.year - 1
-
-
-# --------------------------------------------------------------------------
-# Tax — UK capital gains tax summary
-# --------------------------------------------------------------------------
-
-class TaxTab(ScrollableTab):
-    def __init__(self, parent, app: App):
-        super().__init__(parent, app)
-        self.app = app
-        self._build()
-
-    def _build(self):
-        disclaimer = Card(self, title="Before you rely on these numbers")
-        disclaimer.pack(fill="x", pady=(0, 10))
-        ttk.Label(disclaimer, wraplength=760, justify="left", style="CardDim.TLabel",
-                  text="This is a rough estimate, not tax advice. Capital gains use plain Section 104 "
-                       "average-cost pooling — HMRC's same-day and 30-day \"bed and breakfast\" matching "
-                       "rules aren't applied, which can change the real figure if you buy and sell the "
-                       "same security in quick succession. Verify the CGT allowance below is this tax "
-                       "year's actual HMRC figure before using this for a real Self Assessment.").pack(
-            anchor="w")
-
-        settings_card = Card(self, title="CGT Annual Exempt Amount")
-        settings_card.pack(fill="x", pady=(0, 10))
-        ttk.Label(settings_card, text="Annual exempt amount for this tax year", style="CardDim.TLabel").grid(
-            row=0, column=0, sticky="w")
-        self.allowance_var = tk.StringVar()
-        ttk.Entry(settings_card, textvariable=self.allowance_var, width=10).grid(row=1, column=0, padx=4)
-        ttk.Button(settings_card, text="Save", command=self.save_allowance).grid(row=1, column=1, padx=8)
-
-        self.summary_frame = ttk.Frame(self)
-        self.summary_frame.pack(fill="x", pady=(0, 10))
-
-    def save_allowance(self):
-        try:
-            value = float(self.allowance_var.get())
-        except ValueError:
-            messagebox.showerror("Error", "Enter a number.")
-            return
-        self.app.db.set_setting("cgt_annual_exempt_amount", str(value))
-        self.app.refresh_all()
-
-    def refresh(self):
-        cur = self.app.reporting_currency()
-        default_allowance = self.app.db.get_setting("cgt_annual_exempt_amount", "3000")
-        self.allowance_var.set(default_allowance)
-
-        for w in self.summary_frame.winfo_children():
-            w.destroy()
-
-        tax_year_start = uk_tax_year_start(self.app.today)
-        result = self.app.db.realized_gains_for_uk_tax_year(tax_year_start)
-        allowance = float(default_allowance)
-        taxable = max(0.0, result["total_gain"] - allowance)
-
-        card = Card(self.summary_frame, title=f"Capital Gains — Tax Year {result['tax_year']}")
-        card.pack(fill="x", pady=4)
-        ttk.Label(card, text=f"Net realized gain: {fmt_money(result['total_gain'], cur)}",
-                  style="Card.TLabel").pack(anchor="w")
-        ttk.Label(card, text=f"Annual exempt amount: {fmt_money(allowance, cur)}",
-                  style="CardDim.TLabel").pack(anchor="w")
-        flag = "  OVER ALLOWANCE" if taxable > 0 else ""
-        ttk.Label(card, text=f"Estimated taxable gain: {fmt_money(taxable, cur)}{flag}",
-                  style="Card.TLabel").pack(anchor="w", pady=(4, 0))
 
 
 # --------------------------------------------------------------------------
@@ -3982,7 +3549,28 @@ class SettingsTab(ScrollableTab):
         ttk.Button(general, text="Save Settings", style="Accent.TButton",
                    command=self.save_settings).grid(row=9, column=0, pady=10, sticky="w")
 
-        self.fx_frame = Card(self, title="FX Rates (1 unit of currency = X reporting currency)")
+        profile_card = Card(self, title="Profile")
+        profile_card.pack(fill="x", pady=(0, 10))
+        self.signed_in_label = ttk.Label(
+            profile_card, text=f"Signed in as: {self.app.profile['name']}", style="Card.TLabel")
+        self.signed_in_label.pack(anchor="w")
+        btn_row = ttk.Frame(profile_card, style="Card.TFrame")
+        btn_row.pack(fill="x", pady=(8, 0))
+        ttk.Button(btn_row, text="Rename Profile…", command=self.rename_profile).pack(side="left")
+        ttk.Button(btn_row, text="Switch Profile", command=self.app.switch_profile).pack(
+            side="left", padx=6)
+
+        # Progressive disclosure: General/Profile above are what you touch
+        # day to day; everything below is power-user configuration, tucked
+        # behind an explicit expand instead of always taking up space.
+        self._advanced_expanded = False
+        self.advanced_toggle_btn = ttk.Button(self, text="▸ Advanced Settings",
+                                               command=self._toggle_advanced)
+        self.advanced_toggle_btn.pack(anchor="w", pady=(0, 10))
+        self.advanced_container = ttk.Frame(self)
+
+        self.fx_frame = Card(self.advanced_container,
+                              title="FX Rates (1 unit of currency = X reporting currency)")
         fx_frame = self.fx_frame
         self._fx_visible = self.app.currency_mode() == "holiday"
         if self._fx_visible:
@@ -4002,7 +3590,8 @@ class SettingsTab(ScrollableTab):
                                 relief="flat", font=theme.Fonts.body)
         self.fx_list.grid(row=2, column=0, columnspan=3, pady=6, sticky="w")
 
-        nav_card = Card(self, title="Customize Navigation")
+        nav_card = Card(self.advanced_container, title="Customize Navigation")
+        nav_card._settings_role = "nav_card"
         nav_card.pack(fill="x", pady=(0, 10))
         ttk.Label(nav_card, text="Hide tabs you don't use — Dashboard and Settings always stay.",
                   style="CardDim.TLabel").pack(anchor="w")
@@ -4018,7 +3607,7 @@ class SettingsTab(ScrollableTab):
         ttk.Button(nav_card, text="Save Navigation", style="Accent.TButton",
                    command=self.save_nav_visibility).pack(anchor="w", pady=(8, 0))
 
-        ignored_subs_card = Card(self, title="Ignored Subscriptions")
+        ignored_subs_card = Card(self.advanced_container, title="Ignored Subscriptions")
         ignored_subs_card.pack(fill="x", pady=(0, 10))
         ttk.Label(ignored_subs_card,
                   text="Dismissed from the Recurring tab's Detected Subscriptions list.",
@@ -4028,32 +3617,11 @@ class SettingsTab(ScrollableTab):
         ttk.Button(ignored_subs_card, text="Manage Ignored Subscriptions…",
                    command=self.open_ignored_subscriptions_window).pack(anchor="w", pady=(6, 0))
 
-        profile_card = Card(self, title="Profile")
-        profile_card._settings_role = "profile_card"
-        profile_card.pack(fill="x", pady=(0, 10))
-        self.signed_in_label = ttk.Label(
-            profile_card, text=f"Signed in as: {self.app.profile['name']}", style="Card.TLabel")
-        self.signed_in_label.pack(anchor="w")
-        btn_row = ttk.Frame(profile_card, style="Card.TFrame")
-        btn_row.pack(fill="x", pady=(8, 0))
-        ttk.Button(btn_row, text="Rename Profile…", command=self.rename_profile).pack(side="left")
-        ttk.Button(btn_row, text="Switch Profile", command=self.app.switch_profile).pack(
-            side="left", padx=6)
-        ttk.Button(btn_row, text="Lock This Profile With a Password…",
-                   command=self.lock_profile).pack(side="left", padx=6)
-        ttk.Label(profile_card, wraplength=760, justify="left", style="CardDim.TLabel",
-                  text="Locking encrypts this profile's data file with a password you set and closes "
-                       "it — you'll need the password to reopen it. This uses a stdlib-only cipher "
-                       "(no extra dependencies), which is solid against casual snooping but hasn't had "
-                       "the independent security review a maintained library gets. For anything highly "
-                       "sensitive, full-disk encryption on this machine is still the stronger option."
-                  ).pack(anchor="w", pady=(6, 0))
-
-        data_files_card = Card(self, title="Data Files")
+        data_files_card = Card(self.advanced_container, title="Data Files")
         data_files_card.pack(fill="x", pady=(0, 10))
         ttk.Label(data_files_card, wraplength=760, justify="left", style="CardDim.TLabel",
                   text="Every profile has its own folder with editable CSV files — "
-                       "transactions.csv, accounts.csv, categories.csv, investments.csv — for quick "
+                       "transactions.csv, accounts.csv, categories.csv — for quick "
                        "bulk edits or loading historical data outside the app. Nothing here happens "
                        "automatically: Refresh writes the files, Apply reads them back in."
                   ).pack(anchor="w")
@@ -4070,13 +3638,23 @@ class SettingsTab(ScrollableTab):
                        "backs up the database first (kept in a csv_sync_backups subfolder)."
                   ).pack(anchor="w", pady=(6, 0))
 
-        note = ttk.Label(self, wraplength=800, justify="left",
-                          text="Everything is stored locally per profile in the 'Profiles' folder "
-                               "next to the app — "
-                               "local-first storage, no network calls. If you ever sync these files "
-                               "to the cloud, encrypt them first.",
-                          style="Dim.TLabel")
-        note.pack(fill="x", pady=8)
+        self.note_label = ttk.Label(
+            self, wraplength=800, justify="left",
+            text="Everything is stored locally per profile in the 'Profiles' folder "
+                 "next to the app — "
+                 "local-first storage, no network calls. If you ever sync these files "
+                 "to the cloud, encrypt them first.",
+            style="Dim.TLabel")
+        self.note_label.pack(fill="x", pady=8)
+
+    def _toggle_advanced(self):
+        self._advanced_expanded = not self._advanced_expanded
+        if self._advanced_expanded:
+            self.advanced_container.pack(fill="x", before=self.note_label)
+            self.advanced_toggle_btn.config(text="▾ Advanced Settings")
+        else:
+            self.advanced_container.pack_forget()
+            self.advanced_toggle_btn.config(text="▸ Advanced Settings")
 
     def refresh_csvs(self):
         profile_dir = profiles.profile_dir_for(self.app.profile["slug"])
@@ -4087,7 +3665,7 @@ class SettingsTab(ScrollableTab):
         profile_dir = profiles.profile_dir_for(self.app.profile["slug"])
         if not messagebox.askyesno(
                 "Apply Changes from CSVs",
-                "This reads transactions.csv, accounts.csv, categories.csv, and investments.csv "
+                "This reads transactions.csv, accounts.csv, and categories.csv "
                 "from your profile folder and applies any adds/edits/deletes back into the app. "
                 "Your database is backed up first. Continue?"):
             return
@@ -4121,36 +3699,6 @@ class SettingsTab(ScrollableTab):
         if new_name is None:
             return
         self.app.rename_profile(new_name)
-
-    def lock_profile(self):
-        password = simpledialog.askstring(
-            "Set a password", "Choose a password to lock this profile with:", show="*", parent=self)
-        if not password:
-            return
-        confirm = simpledialog.askstring(
-            "Confirm password", "Enter the same password again:", show="*", parent=self)
-        if confirm != password:
-            messagebox.showerror("Passwords don't match", "Try again — both entries must match.")
-            return
-        if not messagebox.askyesno(
-                "Lock profile",
-                "This will close and encrypt this profile now, and return you to the profile picker. "
-                "You'll need this exact password to reopen it — there is no recovery if you forget it. "
-                "Continue?"):
-            return
-        slug = self.app.profile["slug"]
-        self.app.db.close()
-        try:
-            profiles.lock_profile(slug, password)
-        except Exception as e:
-            messagebox.showerror("Couldn't lock profile", str(e))
-            # db connection is already closed; reopen so the app keeps working
-            self.app.db = Database(profiles.db_path_for(slug))
-            return
-        messagebox.showinfo("Profile locked", "This profile is now locked. Returning to the profile picker.")
-        self.app.destroy()
-        launcher = ProfileLauncher()
-        launcher.mainloop()
 
     def save_settings(self):
         db = self.app.db
@@ -4307,11 +3855,11 @@ class SettingsTab(ScrollableTab):
         render()
 
     def _after_fx_widget(self):
-        """The widget immediately after the FX card's usual slot, so
-        re-showing it in holiday mode restores the original stacking order
-        instead of appending it below Profile."""
-        for child in self.pack_slaves():
-            if getattr(child, "_settings_role", None) == "profile_card":
+        """The widget immediately after the FX card's usual slot within
+        advanced_container, so re-showing it in holiday mode restores the
+        original stacking order instead of appending it below Data Files."""
+        for child in self.advanced_container.pack_slaves():
+            if getattr(child, "_settings_role", None) == "nav_card":
                 return child
         return None
 

@@ -86,9 +86,6 @@ class Database:
             cashback_rate REAL DEFAULT 0,
             contributions REAL DEFAULT 0,
             due_day INTEGER,
-            expected_return_pct REAL DEFAULT 0,
-            return_volatility_pct REAL DEFAULT 0,
-            monthly_contribution REAL DEFAULT 0,
             cashback_auto_invest_account_id INTEGER REFERENCES accounts(id),
             cashback_monthly_cap REAL DEFAULT 0
         );
@@ -113,38 +110,6 @@ class Database:
             FOREIGN KEY(category_id) REFERENCES categories(id),
             FOREIGN KEY(account_id) REFERENCES accounts(id),
             FOREIGN KEY(transfer_to_account_id) REFERENCES accounts(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS investment_contributions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            amount REAL NOT NULL,
-            note TEXT,
-            FOREIGN KEY(account_id) REFERENCES accounts(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS investment_valuations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            value REAL NOT NULL,
-            FOREIGN KEY(account_id) REFERENCES accounts(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS security_lots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_id INTEGER NOT NULL,
-            security TEXT NOT NULL,
-            date TEXT NOT NULL,
-            action TEXT NOT NULL CHECK(action IN ('buy','sell')),
-            quantity REAL NOT NULL CHECK(quantity > 0),
-            price REAL NOT NULL CHECK(price >= 0),
-            fees REAL NOT NULL DEFAULT 0,
-            currency TEXT NOT NULL DEFAULT 'GBP',
-            realized_gain REAL,
-            note TEXT,
-            FOREIGN KEY(account_id) REFERENCES accounts(id)
         );
 
         CREATE TABLE IF NOT EXISTS debts (
@@ -272,18 +237,8 @@ class Database:
             c.execute("ALTER TABLE accounts ADD COLUMN cashback_rate REAL DEFAULT 0")
         if "contributions" not in acc_cols:
             c.execute("ALTER TABLE accounts ADD COLUMN contributions REAL DEFAULT 0")
-            # for pre-existing investment-like accounts (none yet exist at this point,
-            # since 'investment' subtype didn't exist before this migration) this is
-            # simply a fresh 0 starting point going forward.
         if "due_day" not in acc_cols:
             c.execute("ALTER TABLE accounts ADD COLUMN due_day INTEGER")   # credit cards: 1-28
-        if "expected_return_pct" not in acc_cols:
-            c.execute("ALTER TABLE accounts ADD COLUMN expected_return_pct REAL DEFAULT 0")  # investments
-        if "monthly_contribution" not in acc_cols:
-            c.execute("ALTER TABLE accounts ADD COLUMN monthly_contribution REAL DEFAULT 0")  # investments
-
-        if "return_volatility_pct" not in acc_cols:
-            c.execute("ALTER TABLE accounts ADD COLUMN return_volatility_pct REAL DEFAULT 0")
         if "cashback_auto_invest_account_id" not in acc_cols:
             c.execute("ALTER TABLE accounts ADD COLUMN cashback_auto_invest_account_id INTEGER "
                        "REFERENCES accounts(id)")
@@ -356,7 +311,10 @@ class Database:
             # (previously implicit alphabetical order) rather than all tying at 0.
             c.execute("UPDATE categories SET sort_order = id WHERE sort_order IS NULL")
 
-        had_contributions_col = "contributions" in acc_cols
+        # The 'investment' account subtype was removed -- any account still
+        # carrying it (from before this migration) becomes a plain cash
+        # account. Idempotent: no rows match once already migrated.
+        c.execute("UPDATE accounts SET subtype='cash' WHERE subtype='investment'")
 
         c.executescript("""
         CREATE TABLE IF NOT EXISTS meta (
@@ -371,23 +329,6 @@ class Database:
             base_amount REAL NOT NULL,
             roundup_amount REAL NOT NULL,
             FOREIGN KEY(transaction_id) REFERENCES transactions(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS investment_contributions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            amount REAL NOT NULL,
-            note TEXT,
-            FOREIGN KEY(account_id) REFERENCES accounts(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS investment_valuations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_id INTEGER NOT NULL,
-            date TEXT NOT NULL,
-            value REAL NOT NULL,
-            FOREIGN KEY(account_id) REFERENCES accounts(id)
         );
 
         CREATE TABLE IF NOT EXISTS import_staging (
@@ -412,22 +353,6 @@ class Database:
         CREATE INDEX IF NOT EXISTS idx_tx_account_date ON transactions(account_id, date);
         CREATE INDEX IF NOT EXISTS idx_tx_transfer_group ON transactions(transfer_group_id);
         """)
-
-        # One-time backfill: pre-existing 'contributions' balances on
-        # investment accounts become an opening entry in the new
-        # append-only log, so nothing is lost when reads switch over to it.
-        if had_contributions_col:
-            seeded = c.execute("SELECT COUNT(*) n FROM investment_contributions").fetchone()["n"]
-            if seeded == 0:
-                for row in c.execute(
-                    "SELECT id, contributions FROM accounts WHERE subtype='investment' AND contributions > 0"
-                ):
-                    c.execute(
-                        "INSERT INTO investment_contributions(account_id, date, amount, note) "
-                        "VALUES (?, ?, ?, ?)",
-                        (row["id"], datetime.date.today().isoformat(), row["contributions"],
-                         "Opening balance (migrated)"),
-                    )
 
         c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
                    (str(SCHEMA_VERSION),))
@@ -471,7 +396,6 @@ class Database:
                 "color": "#5B8DEF",
                 "created": datetime.date.today().isoformat(),
                 "last_opened": datetime.date.today().isoformat(),
-                "encrypted": "0",   # profile-level encryption flag; see note in set_encrypted()
             }
             for k, v in meta_defaults.items():
                 c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (k, v))
@@ -491,14 +415,6 @@ class Database:
 
     def touch_last_opened(self):
         self.set_meta("last_opened", datetime.date.today().isoformat())
-
-    def set_encrypted(self, flag: bool):
-        """Flags the profile as encrypted-at-rest. NOTE: this does not
-        itself encrypt the SQLite file — real encryption (e.g. SQLCipher)
-        is a separate dependency decision, since this app is otherwise
-        stdlib-only. This flag lets the UI show the right lock icon and
-        warn appropriately once real encryption is wired in."""
-        self.set_meta("encrypted", "1" if flag else "0")
 
     # ---- settings helpers ----
     def get_setting(self, key, default=None):
@@ -641,13 +557,10 @@ class Database:
             if cap > 0:
                 earned_so_far = self.cashback_earned_this_month(account_id, date)
                 cashback = max(0.0, round(min(cashback, cap - earned_so_far), 2))
-        # If this card has a cashback destination configured, cashback is
-        # routed straight into that account instead of sitting unredeemed for
-        # later manual redemption. An investment destination gets the same
-        # balance+contributions update add_investment_contribution() uses (so
-        # cost basis stays accurate); any other destination (e.g. the Round-Up
-        # Jar) gets a plain balance credit, same as a round-up sweep -- no
-        # cost-basis concept applies to a spare-change pot.
+        # If this card has a cashback destination configured (e.g. the
+        # Round-Up Jar), cashback is routed straight into that account
+        # instead of sitting unredeemed for later manual redemption -- a
+        # plain balance credit, same as a round-up sweep.
         cashback_target_id = acc["cashback_auto_invest_account_id"] if acc else None
         cashback_target_acc = self.get_account(cashback_target_id) if cashback_target_id else None
         cashback_redeemed = 1 if (cashback > 0 and cashback_target_acc) else 0
@@ -664,19 +577,9 @@ class Database:
             if apply_cashback_roundup and amount < 0:
                 self._apply_roundup_nocommit(tx_id, date, amount)
             if cashback_redeemed:
-                if cashback_target_acc["subtype"] == "investment":
-                    self.conn.execute(
-                        "UPDATE accounts SET balance = balance + ?, contributions = contributions + ? "
-                        "WHERE id=?", (cashback, cashback, cashback_target_id))
-                    self.conn.execute(
-                        "INSERT INTO investment_contributions(account_id, date, amount, note) "
-                        "VALUES (?, ?, ?, ?)",
-                        (cashback_target_id, date, cashback, f"Auto-invested cashback from {payee}"),
-                    )
-                else:
-                    self.conn.execute(
-                        "UPDATE accounts SET balance = balance + ? WHERE id=?",
-                        (cashback, cashback_target_id))
+                self.conn.execute(
+                    "UPDATE accounts SET balance = balance + ? WHERE id=?",
+                    (cashback, cashback_target_id))
         return tx_id
 
     def add_balance_adjustment(self, account_id, actual_balance, date=None):
@@ -1152,15 +1055,12 @@ class Database:
         return self.conn.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
 
     def add_account(self, name, kind, balance, currency="GBP", liquid=False, subtype="cash",
-                     credit_limit=0.0, cashback_rate=0.0, due_day=None,
-                     expected_return_pct=0.0, monthly_contribution=0.0, cashback_monthly_cap=0.0):
+                     credit_limit=0.0, cashback_rate=0.0, due_day=None, cashback_monthly_cap=0.0):
         self.conn.execute(
             "INSERT INTO accounts(name, kind, balance, currency, liquid, subtype, credit_limit, "
-            "cashback_rate, contributions, due_day, expected_return_pct, monthly_contribution, "
-            "cashback_monthly_cap) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "cashback_rate, due_day, cashback_monthly_cap) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (name, kind, balance, currency.upper(), int(liquid), subtype, credit_limit,
-             cashback_rate, balance if subtype == "investment" else 0.0, due_day,
-             expected_return_pct, monthly_contribution, cashback_monthly_cap),
+             cashback_rate, due_day, cashback_monthly_cap),
         )
         self.conn.commit()
 
@@ -1184,9 +1084,7 @@ class Database:
                                    (int(liquid), account_id))
 
     def update_account_details(self, account_id, credit_limit=None, cashback_rate=None, due_day=None,
-                                expected_return_pct=None, monthly_contribution=None,
-                                return_volatility_pct=None, cashback_auto_invest_account_id=None,
-                                cashback_monthly_cap=None):
+                                cashback_auto_invest_account_id=None, cashback_monthly_cap=None):
         with self.conn:
             if credit_limit is not None:
                 self.conn.execute("UPDATE accounts SET credit_limit=? WHERE id=?", (credit_limit, account_id))
@@ -1197,15 +1095,6 @@ class Database:
                                    (cashback_monthly_cap, account_id))
             if due_day is not None:
                 self.conn.execute("UPDATE accounts SET due_day=? WHERE id=?", (due_day, account_id))
-            if expected_return_pct is not None:
-                self.conn.execute("UPDATE accounts SET expected_return_pct=? WHERE id=?",
-                                   (expected_return_pct, account_id))
-            if monthly_contribution is not None:
-                self.conn.execute("UPDATE accounts SET monthly_contribution=? WHERE id=?",
-                                   (monthly_contribution, account_id))
-            if return_volatility_pct is not None:
-                self.conn.execute("UPDATE accounts SET return_volatility_pct=? WHERE id=?",
-                                   (return_volatility_pct, account_id))
             if cashback_auto_invest_account_id is not None:
                 self.conn.execute("UPDATE accounts SET cashback_auto_invest_account_id=? WHERE id=?",
                                    (cashback_auto_invest_account_id or None, account_id))
@@ -1213,177 +1102,6 @@ class Database:
     def delete_account(self, account_id):
         self.conn.execute("DELETE FROM accounts WHERE id=?", (account_id,))
         self.conn.commit()
-
-    def add_investment_contribution(self, account_id, amount, date=None, note=""):
-        """Adding new money in: both the balance and the cost-basis
-        (contributions) go up, so growth = balance - contributions stays
-        accurate. Logged to the append-only investment_contributions table
-        (isolated from mark-to-market updates) so contribution history —
-        not just the current total — is preserved and auditable."""
-        if date is None:
-            date = datetime.date.today().isoformat()
-        with self.conn:
-            self.conn.execute(
-                "UPDATE accounts SET balance = balance + ?, contributions = contributions + ? WHERE id=?",
-                (amount, amount, account_id))
-            self.conn.execute(
-                "INSERT INTO investment_contributions(account_id, date, amount, note) VALUES (?, ?, ?, ?)",
-                (account_id, date, amount, note),
-            )
-
-    def update_investment_value(self, account_id, new_balance, date=None):
-        """Mark-to-market update: only the balance changes, so any difference
-        from contributions shows up as investment growth (or loss). Logged
-        to investment_valuations so a value-over-time chart is possible
-        independent of when contributions were made."""
-        if date is None:
-            date = datetime.date.today().isoformat()
-        with self.conn:
-            self.conn.execute("UPDATE accounts SET balance=? WHERE id=?", (new_balance, account_id))
-            self.conn.execute(
-                "INSERT INTO investment_valuations(account_id, date, value) VALUES (?, ?, ?)",
-                (account_id, date, new_balance),
-            )
-
-    def get_investment_contributions(self, account_id):
-        return self.conn.execute(
-            "SELECT * FROM investment_contributions WHERE account_id=? ORDER BY date", (account_id,)
-        ).fetchall()
-
-    def get_investment_valuations(self, account_id):
-        return self.conn.execute(
-            "SELECT * FROM investment_valuations WHERE account_id=? ORDER BY date", (account_id,)
-        ).fetchall()
-
-    # ---- capital gains (UK Section 104 average-cost pooling) ----
-    #
-    # IMPORTANT LIMITATION: this implements plain Section 104 pooling only —
-    # every buy/sell of a security within one account is pooled into a
-    # single running average cost. It does NOT implement HMRC's same-day
-    # rule or the 30-day "bed and breakfast" rule, both of which must be
-    # applied BEFORE pooling for a fully correct UK CGT computation (they
-    # match a disposal against acquisitions on the same day or within the
-    # following 30 days at their own cost, ahead of the general pool).
-    # Numbers here are a reasonable estimate for someone who isn't
-    # rapidly trading the same security, not a substitute for proper tax
-    # software or an accountant — verify before relying on this for a
-    # real Self Assessment return.
-
-    def add_security_transaction(self, account_id, security, date, action, quantity, price,
-                                  fees=0.0, currency=None, note=""):
-        if action not in ("buy", "sell"):
-            raise ValueError(f"action must be 'buy' or 'sell', got {action!r}")
-        currency = (currency or self.get_setting("reporting_currency", "GBP")).upper()
-        with self.conn:
-            cur = self.conn.execute(
-                "INSERT INTO security_lots(account_id, security, date, action, quantity, price, fees, "
-                "currency, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (account_id, security, date, action, quantity, price, fees, currency, note),
-            )
-            lot_id = cur.lastrowid
-            self._recompute_realized_gains_nocommit(account_id, security)
-        return lot_id
-
-    def update_security_transaction(self, lot_id, date=None, action=None, quantity=None, price=None,
-                                     fees=None, currency=None, note=None):
-        row = self.conn.execute("SELECT * FROM security_lots WHERE id=?", (lot_id,)).fetchone()
-        if not row:
-            raise ValueError(f"No security transaction with id {lot_id}.")
-        if action is not None and action not in ("buy", "sell"):
-            raise ValueError(f"action must be 'buy' or 'sell', got {action!r}")
-        new_currency = (row["currency"] if currency is None else currency).upper()
-        with self.conn:
-            self.conn.execute(
-                "UPDATE security_lots SET date=?, action=?, quantity=?, price=?, fees=?, currency=?, "
-                "note=? WHERE id=?",
-                (row["date"] if date is None else date,
-                 row["action"] if action is None else action,
-                 row["quantity"] if quantity is None else quantity,
-                 row["price"] if price is None else price,
-                 row["fees"] if fees is None else fees,
-                 new_currency,
-                 row["note"] if note is None else note,
-                 lot_id),
-            )
-            self._recompute_realized_gains_nocommit(row["account_id"], row["security"])
-
-    def delete_security_transaction(self, lot_id):
-        row = self.conn.execute("SELECT * FROM security_lots WHERE id=?", (lot_id,)).fetchone()
-        if not row:
-            return
-        with self.conn:
-            self.conn.execute("DELETE FROM security_lots WHERE id=?", (lot_id,))
-            self._recompute_realized_gains_nocommit(row["account_id"], row["security"])
-
-    def _recompute_realized_gains_nocommit(self, account_id, security):
-        """Replays every buy/sell for this (account, security) in date order
-        and rewrites each sell's stored realized_gain from scratch. Cheap
-        and always-correct for the data volumes a personal portfolio has —
-        simpler and safer than trying to patch only 'affected' rows when a
-        backdated transaction is inserted out of order."""
-        rows = self.conn.execute(
-            "SELECT id, action, quantity, price, fees FROM security_lots "
-            "WHERE account_id=? AND security=? ORDER BY date, id",
-            (account_id, security),
-        ).fetchall()
-        pool_qty, pool_cost = 0.0, 0.0
-        for row in rows:
-            if row["action"] == "buy":
-                pool_qty += row["quantity"]
-                pool_cost += row["quantity"] * row["price"] + row["fees"]
-            else:
-                avg_cost = pool_cost / pool_qty if pool_qty else 0.0
-                cost_of_sold = avg_cost * row["quantity"]
-                proceeds = row["quantity"] * row["price"] - row["fees"]
-                self.conn.execute("UPDATE security_lots SET realized_gain=? WHERE id=?",
-                                   (proceeds - cost_of_sold, row["id"]))
-                pool_qty -= row["quantity"]
-                pool_cost -= cost_of_sold
-
-    def security_pool_state(self, account_id, security):
-        """Current holding for this security in this account: (quantity,
-        total pool cost, average cost per unit)."""
-        rows = self.conn.execute(
-            "SELECT action, quantity, price, fees FROM security_lots "
-            "WHERE account_id=? AND security=? ORDER BY date, id",
-            (account_id, security),
-        ).fetchall()
-        pool_qty, pool_cost = 0.0, 0.0
-        for row in rows:
-            if row["action"] == "buy":
-                pool_qty += row["quantity"]
-                pool_cost += row["quantity"] * row["price"] + row["fees"]
-            else:
-                avg_cost = pool_cost / pool_qty if pool_qty else 0.0
-                cost_of_sold = avg_cost * row["quantity"]
-                pool_qty -= row["quantity"]
-                pool_cost -= cost_of_sold
-        avg_cost = pool_cost / pool_qty if pool_qty else 0.0
-        return pool_qty, pool_cost, avg_cost
-
-    def list_securities(self, account_id=None):
-        q = "SELECT DISTINCT account_id, security FROM security_lots"
-        params = ()
-        if account_id:
-            q += " WHERE account_id=?"
-            params = (account_id,)
-        return self.conn.execute(q + " ORDER BY security", params).fetchall()
-
-    def realized_gains_for_uk_tax_year(self, start_year):
-        """UK tax year start_year/start_year+1 runs 6 Apr start_year to
-        5 Apr start_year+1. Returns every sell in that window plus the
-        total gain (losses are negative, so this is already net)."""
-        start = f"{start_year:04d}-04-06"
-        end = f"{start_year + 1:04d}-04-05"
-        sells = self.conn.execute(
-            "SELECT sl.*, a.name as account_name FROM security_lots sl "
-            "JOIN accounts a ON sl.account_id = a.id "
-            "WHERE sl.action='sell' AND sl.date >= ? AND sl.date <= ? ORDER BY sl.date",
-            (start, end),
-        ).fetchall()
-        total_gain = sum(s["realized_gain"] or 0.0 for s in sells)
-        return {"tax_year": f"{start_year}/{str(start_year + 1)[2:]}", "start": start, "end": end,
-                "sells": sells, "total_gain": total_gain}
 
     def get_or_create_roundup_jar(self):
         row = self.conn.execute("SELECT * FROM accounts WHERE subtype='roundup_pot' LIMIT 1").fetchone()
@@ -1698,7 +1416,7 @@ def liquid_assets(db: Database):
 def net_worth_breakdown(db: Database):
     """Net worth split by account subtype, signed so assets are positive and
     liabilities negative — feeds the 'net worth by type' donut/bar chart."""
-    totals = {"cash": 0.0, "credit_card": 0.0, "investment": 0.0, "loan": 0.0, "other": 0.0}
+    totals = {"cash": 0.0, "credit_card": 0.0, "loan": 0.0, "other": 0.0}
     for a in db.list_accounts():
         val = db.to_reporting(a["balance"], a["currency"])
         signed = val if a["kind"] == "asset" else -val
@@ -1720,21 +1438,6 @@ def credit_utilization(db: Database):
             out.append({"account": a, "balance": bal, "limit": limit,
                         "utilization": bal / limit if limit > 0 else 0.0})
     out.sort(key=lambda x: -x["utilization"])
-    return out
-
-
-def investment_summary(db: Database):
-    """Contributions vs. current value vs. growth for every investment
-    account — feeds the Net Worth tab's investment cards."""
-    out = []
-    for a in db.list_accounts():
-        if a["subtype"] == "investment":
-            balance = db.to_reporting(a["balance"], a["currency"])
-            contributions = db.to_reporting(a["contributions"] or 0.0, a["currency"])
-            growth = balance - contributions
-            growth_pct = (growth / contributions) if contributions > 0 else 0.0
-            out.append({"account": a, "balance": balance, "contributions": contributions,
-                        "growth": growth, "growth_pct": growth_pct})
     return out
 
 
@@ -1760,60 +1463,6 @@ def upcoming_card_payments(db: Database, within_days=14, today: Optional[datetim
                         "balance": db.to_reporting(a["balance"], a["currency"])})
     out.sort(key=lambda x: x["due_date"])
     return out
-
-
-def investment_projection(db: Database, years=10):
-    """Simple compounding projection for the investment portfolio: for each
-    investment account, grows the current balance monthly at its own
-    expected_return_pct (annual, converted to a monthly rate) and adds its
-    monthly_contribution each month. Purely illustrative — assumes constant
-    returns and contributions, which real markets never actually deliver.
-    Returns (labels, values) for a 'total portfolio value over time' chart."""
-    labels, mid, _, _ = investment_projection_with_bands(db, years=years)
-    return labels, mid
-
-
-def investment_projection_with_bands(db: Database, years=10):
-    """Same illustrative compounding projection as investment_projection,
-    but also returns a low/high band derived from each account's
-    return_volatility_pct (annual stdev of returns). This is still plain
-    arithmetic, not a Monte Carlo simulation: the band is the deterministic
-    envelope you'd get compounding at (expected - 1 stdev) and
-    (expected + 1 stdev) every year, which is a reasonable illustrative
-    'how wrong could this be' range without pretending to model real
-    market path-dependence. Returns (labels, mid_values, low_values, high_values)."""
-    accounts = [a for a in db.list_accounts() if a["subtype"] == "investment"]
-    months = years * 12
-
-    def run(rate_offset_pct):
-        balances = [db.to_reporting(a["balance"], a["currency"]) for a in accounts]
-        rates = [max((a["expected_return_pct"] or 0.0) + rate_offset_pct, -99.0) / 100.0 / 12.0
-                 for a in accounts]
-        contribs = [db.to_reporting(a["monthly_contribution"] or 0.0, a["currency"]) for a in accounts]
-        values = [sum(balances)]
-        for _ in range(months):
-            balances = [b * (1 + r) + c for b, r, c in zip(balances, rates, contribs)]
-            values.append(sum(balances))
-        return values[::12]
-
-    if not accounts:
-        return [], [], [], []
-
-    # portfolio-level volatility offset: average of each account's own
-    # volatility assumption (0 if unset), applied uniformly for simplicity.
-    vols = [a["return_volatility_pct"] or 0.0 for a in accounts]
-    avg_vol = mean(vols) if vols else 0.0
-
-    mid_values = run(0.0)
-    low_values = run(-avg_vol)
-    high_values = run(avg_vol)
-
-    labels = []
-    start_year = datetime.date.today().year
-    for i in range(0, months + 1, 12):
-        labels.append(str(start_year + i // 12))
-    n = len(mid_values)
-    return labels[:n], mid_values, low_values[:n], high_values[:n]
 
 
 def monthly_essential_expenses(db: Database, year, month):
@@ -2542,31 +2191,6 @@ def export_categories_editable_csv(db: Database, path):
     return len(rows)
 
 
-def export_investments_editable_csv(db: Database, path):
-    """realized_gain is included for reference only — it's computed from
-    the pool replay, not something apply_investments_csv() accepts edits
-    to."""
-    import csv
-    rows = db.conn.execute(
-        "SELECT s.*, a.name as account_name FROM security_lots s "
-        "LEFT JOIN accounts a ON s.account_id = a.id ORDER BY s.date, s.id"
-    ).fetchall()
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["id", "account", "security", "date", "action",
-                                                "quantity", "price", "fees", "currency", "note",
-                                                "realized_gain"])
-        writer.writeheader()
-        for r in rows:
-            writer.writerow({
-                "id": r["id"], "account": r["account_name"] or "", "security": r["security"],
-                "date": r["date"], "action": r["action"], "quantity": r["quantity"],
-                "price": r["price"], "fees": r["fees"], "currency": r["currency"],
-                "note": r["note"] or "",
-                "realized_gain": r["realized_gain"] if r["realized_gain"] is not None else "",
-            })
-    return len(rows)
-
-
 def _transaction_status(db, t):
     if t["is_transfer"]:
         return "transfer"
@@ -2809,112 +2433,26 @@ def apply_categories_csv(db: Database, path):
     return report
 
 
-def apply_investments_csv(db: Database, path):
-    """Adds/edits/deletes security transactions from investments.csv —
-    unlike accounts/categories, deletion-by-omission is supported here
-    since nothing else references a security_lots row by id, and bulk
-    historical backfill/correction is the main reason this file exists.
-    realized_gain edits are ignored — it's recomputed, not stored input."""
-    import csv
-    with open(path, "r", newline="", encoding="utf-8-sig") as f:
-        csv_rows = list(csv.DictReader(f))
-
-    accounts_by_name = {a["name"].lower(): a["id"] for a in db.list_accounts()}
-    existing = {r["id"]: r for r in db.conn.execute("SELECT * FROM security_lots").fetchall()}
-    report = {"added": 0, "edited": 0, "deleted": 0, "skipped": []}
-    seen_ids = set()
-
-    for row in csv_rows:
-        raw_id = (row.get("id") or "").strip()
-
-        # Resolve and register the id BEFORE any other validation — same
-        # reasoning as apply_transactions_csv: a typo elsewhere in the row
-        # must only skip that edit, never be mistaken for the row being
-        # intentionally removed (which would delete it in the cleanup pass).
-        current = None
-        if raw_id:
-            try:
-                lot_id = int(raw_id)
-            except ValueError:
-                report["skipped"].append({"id": raw_id, "reason": f"Invalid id '{raw_id}'"})
-                continue
-            current = existing.get(lot_id)
-            if current is None:
-                report["skipped"].append(
-                    {"id": raw_id,
-                     "reason": "No security transaction with this id — leave id blank for a new row"})
-                continue
-            seen_ids.add(lot_id)
-
-        account_name = (row.get("account") or "").strip()
-        account_id = accounts_by_name.get(account_name.lower())
-        if account_id is None:
-            report["skipped"].append({"id": raw_id, "reason": f"Unknown account '{account_name}'"})
-            continue
-        security = (row.get("security") or "").strip()
-        action = (row.get("action") or "").strip()
-        if not security or action not in ("buy", "sell"):
-            report["skipped"].append(
-                {"id": raw_id, "reason": f"Missing security or invalid action '{action}' (buy/sell)"})
-            continue
-        try:
-            date = datetime.date.fromisoformat(row["date"].strip()).isoformat()
-            quantity = float(row["quantity"])
-            price = float(row["price"])
-            fees = float(row.get("fees") or 0)
-        except (ValueError, TypeError, KeyError):
-            report["skipped"].append({"id": raw_id, "reason": "Unrecognised date/quantity/price/fees"})
-            continue
-        currency = (row.get("currency") or db.get_setting("reporting_currency", "GBP")).upper()
-        note = (row.get("note") or "").strip()
-
-        if current is None:
-            db.add_security_transaction(account_id, security, date, action, quantity, price,
-                                         fees=fees, currency=currency, note=note)
-            report["added"] += 1
-            continue
-
-        lot_id = current["id"]
-        changed = (current["account_id"] != account_id or current["security"] != security or
-                   current["date"] != date or current["action"] != action or
-                   abs(current["quantity"] - quantity) > 0.0005 or abs(current["price"] - price) > 0.005 or
-                   abs(current["fees"] - fees) > 0.005 or current["currency"] != currency or
-                   (current["note"] or "") != note)
-        if not changed:
-            continue
-        db.update_security_transaction(lot_id, date=date, action=action, quantity=quantity,
-                                        price=price, fees=fees, currency=currency, note=note)
-        report["edited"] += 1
-
-    for lot_id in existing:
-        if lot_id not in seen_ids:
-            db.delete_security_transaction(lot_id)
-            report["deleted"] += 1
-
-    return report
-
-
-PROFILE_CSV_FILENAMES = ("accounts.csv", "categories.csv", "transactions.csv", "investments.csv")
+PROFILE_CSV_FILENAMES = ("accounts.csv", "categories.csv", "transactions.csv")
 
 
 def refresh_profile_csvs(db: Database, profile_dir):
-    """Regenerates all 4 editable CSVs from current data, overwriting
+    """Regenerates all 3 editable CSVs from current data, overwriting
     whatever was there before — the "Refresh" half of the two-way sync.
     Never touches the database."""
     import os
     export_accounts_editable_csv(db, os.path.join(profile_dir, "accounts.csv"))
     export_categories_editable_csv(db, os.path.join(profile_dir, "categories.csv"))
     export_transactions_editable_csv(db, os.path.join(profile_dir, "transactions.csv"))
-    export_investments_editable_csv(db, os.path.join(profile_dir, "investments.csv"))
 
 
 def apply_profile_csvs(db: Database, profile_dir, db_path):
-    """Backs up db_path, then applies all 4 CSVs and returns one combined
+    """Backs up db_path, then applies all 3 CSVs and returns one combined
     report. Order matters: accounts.csv and categories.csv are applied
     first, so a brand-new account/category added there is already in the
-    database by the time transactions.csv/investments.csv try to resolve
-    it by name in the same pass. A CSV file that doesn't exist (e.g. never
-    refreshed) is silently skipped rather than treated as an error."""
+    database by the time transactions.csv tries to resolve it by name in
+    the same pass. A CSV file that doesn't exist (e.g. never refreshed) is
+    silently skipped rather than treated as an error."""
     import os
     import shutil
     import datetime as _dt
@@ -2930,7 +2468,6 @@ def apply_profile_csvs(db: Database, profile_dir, db_path):
         ("accounts.csv", apply_accounts_csv),
         ("categories.csv", apply_categories_csv),
         ("transactions.csv", apply_transactions_csv),
-        ("investments.csv", apply_investments_csv),
     ]
     for fname, apply_fn in appliers:
         path = os.path.join(profile_dir, fname)

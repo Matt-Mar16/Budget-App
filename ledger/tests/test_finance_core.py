@@ -10,8 +10,8 @@ from finance_core import (
     daily_spend_totals, detect_recurring_candidates, csv_import_preview, csv_import_commit,
     export_account_statement_csv, category_budget_status, spend_by_kind, income_by_category,
     export_transactions_editable_csv, export_accounts_editable_csv,
-    export_categories_editable_csv, export_investments_editable_csv,
-    apply_transactions_csv, apply_accounts_csv, apply_categories_csv, apply_investments_csv,
+    export_categories_editable_csv,
+    apply_transactions_csv, apply_accounts_csv, apply_categories_csv,
     refresh_profile_csvs, apply_profile_csvs, month_bounds, custom_month_for_date,
     safe_to_spend, would_exceed_budget, upcoming_bills, whatif_category_adjustment,
     goal_projection,
@@ -553,26 +553,21 @@ def test_add_transaction_cashback_uncapped_when_cap_is_zero(tmp_path):
     db.close()
 
 
-def test_capped_cashback_is_what_gets_auto_invested_not_the_pre_cap_amount(tmp_path):
+def test_capped_cashback_is_what_gets_routed_to_the_destination_not_the_pre_cap_amount(tmp_path):
     db = _db(tmp_path)
     db.add_account("Card", "liability", 0.0, currency="GBP", subtype="credit_card",
                     cashback_rate=10.0)
-    db.add_account("ISA", "asset", 0.0, currency="GBP", subtype="investment")
+    jar = db.get_or_create_roundup_jar()
     card_id = next(a["id"] for a in db.list_accounts() if a["name"] == "Card")
-    isa_id = next(a["id"] for a in db.list_accounts() if a["name"] == "ISA")
     db.update_account_details(card_id, cashback_monthly_cap=5.0,
-                               cashback_auto_invest_account_id=isa_id)
+                               cashback_auto_invest_account_id=jar["id"])
 
     # Naive cashback would be £10 (10% of £100), but the £5 cap must clamp it to £5
-    # BEFORE that capped figure is what gets auto-invested — not the pre-cap £10.
+    # BEFORE that capped figure is what gets routed to the destination — not the
+    # pre-cap £10.
     db.add_transaction("2026-08-01", "Shop", None, -100.0, "GBP", account_id=card_id)
 
-    assert db.get_account(isa_id)["balance"] == pytest.approx(5.0)
-    contributions = db.conn.execute(
-        "SELECT amount FROM investment_contributions WHERE account_id=?", (isa_id,)
-    ).fetchall()
-    assert len(contributions) == 1
-    assert contributions[0]["amount"] == pytest.approx(5.0)
+    assert db.get_account(jar["id"])["balance"] == pytest.approx(5.0)
     db.close()
 
 
@@ -830,34 +825,6 @@ def test_transfer_between_accounts_still_converts_via_fx_rates_when_to_amount_om
     db.close()
 
 
-def test_add_transaction_auto_invests_cashback_when_card_has_an_auto_invest_target(tmp_path):
-    db = _db(tmp_path)
-    db.add_account("Index Fund", "asset", 0.0, currency="GBP", subtype="investment")
-    index_fund_id = db.list_accounts()[0]["id"]
-    db.add_account("Rewards Card", "liability", 0.0, currency="GBP", subtype="credit_card",
-                    cashback_rate=1.5)
-    card_id = next(a["id"] for a in db.list_accounts() if a["name"] == "Rewards Card")
-    db.update_account_details(card_id, cashback_auto_invest_account_id=index_fund_id)
-
-    tx_id = db.add_transaction(
-        date="2026-09-03", payee="Tesco", category_id=None, amount=-100.0, currency="GBP",
-        account_id=card_id,
-    )
-
-    fund = db.get_account(index_fund_id)
-    assert fund["balance"] == pytest.approx(1.5)
-    assert fund["contributions"] == pytest.approx(1.5)
-
-    contributions = db.get_investment_contributions(index_fund_id)
-    assert len(contributions) == 1
-    assert contributions[0]["amount"] == pytest.approx(1.5)
-
-    tx = db.conn.execute("SELECT cashback_redeemed FROM transactions WHERE id=?", (tx_id,)).fetchone()
-    assert tx["cashback_redeemed"] == 1
-
-    db.close()
-
-
 def test_add_transaction_routes_cashback_to_the_roundup_jar_as_a_plain_balance_credit(tmp_path):
     db = _db(tmp_path)
     jar = db.get_or_create_roundup_jar()
@@ -873,11 +840,6 @@ def test_add_transaction_routes_cashback_to_the_roundup_jar_as_a_plain_balance_c
 
     jar_after = db.get_account(jar["id"])
     assert jar_after["balance"] == pytest.approx(1.5)
-    # A jar has no cost-basis concept -- unlike the investment-destination
-    # case, contributions must NOT move and no investment_contributions row
-    # should be created for it.
-    assert jar_after["contributions"] == pytest.approx(0.0)
-    assert db.get_investment_contributions(jar["id"]) == []
 
     tx = db.conn.execute("SELECT cashback_redeemed FROM transactions WHERE id=?", (tx_id,)).fetchone()
     assert tx["cashback_redeemed"] == 1
@@ -886,12 +848,11 @@ def test_add_transaction_routes_cashback_to_the_roundup_jar_as_a_plain_balance_c
 
 def test_update_account_details_clears_cashback_auto_invest_target_when_passed_zero(tmp_path):
     db = _db(tmp_path)
-    db.add_account("Index Fund", "asset", 0.0, currency="GBP", subtype="investment")
-    index_fund_id = db.list_accounts()[0]["id"]
+    jar = db.get_or_create_roundup_jar()
     db.add_account("Rewards Card", "liability", 0.0, currency="GBP", subtype="credit_card",
                     cashback_rate=1.5)
     card_id = next(a["id"] for a in db.list_accounts() if a["name"] == "Rewards Card")
-    db.update_account_details(card_id, cashback_auto_invest_account_id=index_fund_id)
+    db.update_account_details(card_id, cashback_auto_invest_account_id=jar["id"])
 
     db.update_account_details(card_id, cashback_auto_invest_account_id=0)
 
@@ -912,82 +873,6 @@ def test_add_transaction_leaves_cashback_unredeemed_without_an_auto_invest_targe
     )
 
     assert db.get_unredeemed_cashback() == pytest.approx(1.5)
-
-    db.close()
-
-
-def test_add_security_transaction_computes_realized_gain_using_section_104_pooling(tmp_path):
-    db = _db(tmp_path)
-    db.add_account("Index Fund", "asset", 0.0, currency="GBP", subtype="investment")
-    account_id = db.list_accounts()[0]["id"]
-
-    db.add_security_transaction(account_id, "VWRL", "2026-01-01", "buy", 100, 10.0)
-    db.add_security_transaction(account_id, "VWRL", "2026-02-01", "buy", 100, 12.0)
-    sell_id = db.add_security_transaction(account_id, "VWRL", "2026-03-01", "sell", 50, 15.0, fees=5.0)
-
-    row = db.conn.execute("SELECT realized_gain FROM security_lots WHERE id=?", (sell_id,)).fetchone()
-    # pool after both buys: 200 units, cost 2200 -> avg cost 11/unit
-    # proceeds = 50*15 - 5 = 745; cost of units sold = 50*11 = 550; gain = 195
-    assert row["realized_gain"] == pytest.approx(195.0)
-
-    db.close()
-
-
-def test_add_security_transaction_retroactively_recomputes_gains_for_a_backdated_buy(tmp_path):
-    db = _db(tmp_path)
-    db.add_account("Index Fund", "asset", 0.0, currency="GBP", subtype="investment")
-    account_id = db.list_accounts()[0]["id"]
-
-    db.add_security_transaction(account_id, "VWRL", "2026-01-01", "buy", 100, 10.0)
-    sell_id = db.add_security_transaction(account_id, "VWRL", "2026-02-01", "sell", 50, 15.0)
-    before = db.conn.execute("SELECT realized_gain FROM security_lots WHERE id=?", (sell_id,)).fetchone()
-    assert before["realized_gain"] == pytest.approx(250.0)  # avg cost 10, gain = 50*15 - 50*10
-
-    # a backdated buy inserted between the existing buy and sell changes the
-    # pool's average cost at the time of the sell, so the sell's stored
-    # realized_gain must update too, not just future transactions.
-    db.add_security_transaction(account_id, "VWRL", "2026-01-15", "buy", 100, 12.0)
-
-    after = db.conn.execute("SELECT realized_gain FROM security_lots WHERE id=?", (sell_id,)).fetchone()
-    # pool at time of sell: 200 units, cost 2200 -> avg 11; gain = 50*15 - 50*11 = 200
-    assert after["realized_gain"] == pytest.approx(200.0)
-
-    db.close()
-
-
-def test_security_pool_state_returns_current_holdings_and_average_cost(tmp_path):
-    db = _db(tmp_path)
-    db.add_account("Index Fund", "asset", 0.0, currency="GBP", subtype="investment")
-    account_id = db.list_accounts()[0]["id"]
-
-    db.add_security_transaction(account_id, "VWRL", "2026-01-01", "buy", 100, 10.0)
-    db.add_security_transaction(account_id, "VWRL", "2026-02-01", "buy", 100, 12.0)
-    db.add_security_transaction(account_id, "VWRL", "2026-03-01", "sell", 50, 15.0)
-
-    quantity, cost, avg_cost = db.security_pool_state(account_id, "VWRL")
-
-    assert quantity == pytest.approx(150.0)
-    assert avg_cost == pytest.approx(11.0)
-    assert cost == pytest.approx(1650.0)
-
-    db.close()
-
-
-def test_realized_gains_for_uk_tax_year_sums_sells_within_6_apr_to_5_apr(tmp_path):
-    db = _db(tmp_path)
-    db.add_account("Index Fund", "asset", 0.0, currency="GBP", subtype="investment")
-    account_id = db.list_accounts()[0]["id"]
-
-    db.add_security_transaction(account_id, "VWRL", "2026-01-01", "buy", 300, 10.0)
-    # inside tax year 2025/26 (2025-04-06 to 2026-04-05)
-    db.add_security_transaction(account_id, "VWRL", "2026-03-01", "sell", 50, 15.0)
-    # inside tax year 2026/27 (2026-04-06 to 2027-04-05)
-    db.add_security_transaction(account_id, "VWRL", "2026-05-01", "sell", 50, 20.0)
-
-    result = db.realized_gains_for_uk_tax_year(2025)
-
-    assert result["total_gain"] == pytest.approx(250.0)  # 50 * (15 - 10)
-    assert len(result["sells"]) == 1
 
     db.close()
 
@@ -1685,41 +1570,6 @@ def test_update_account_core_leaves_unspecified_fields_unchanged(tmp_path):
     db.close()
 
 
-def test_update_security_transaction_edits_the_lot_and_recomputes_gains(tmp_path):
-    db = _db(tmp_path)
-    db.add_account("Index Fund", "asset", 0.0, currency="GBP", subtype="investment")
-    account_id = db.list_accounts()[0]["id"]
-    db.add_security_transaction(account_id, "VWRL", "2026-01-01", "buy", 100, 10.0)
-    sell_id = db.add_security_transaction(account_id, "VWRL", "2026-02-01", "sell", 50, 15.0)
-    before = db.conn.execute("SELECT realized_gain FROM security_lots WHERE id=?", (sell_id,)).fetchone()
-    assert before["realized_gain"] == pytest.approx(250.0)  # avg cost 10, gain = 50*15 - 50*10
-
-    db.update_security_transaction(sell_id, price=20.0)  # sell at 20 instead of 15
-
-    after = db.conn.execute("SELECT realized_gain, price FROM security_lots WHERE id=?", (sell_id,)).fetchone()
-    assert after["price"] == pytest.approx(20.0)
-    assert after["realized_gain"] == pytest.approx(500.0)  # 50*20 - 50*10
-
-    db.close()
-
-
-def test_delete_security_transaction_removes_the_lot_and_recomputes_gains(tmp_path):
-    db = _db(tmp_path)
-    db.add_account("Index Fund", "asset", 0.0, currency="GBP", subtype="investment")
-    account_id = db.list_accounts()[0]["id"]
-    db.add_security_transaction(account_id, "VWRL", "2026-01-01", "buy", 100, 10.0)
-    sell_id = db.add_security_transaction(account_id, "VWRL", "2026-02-01", "sell", 50, 15.0)
-
-    db.delete_security_transaction(sell_id)
-
-    remaining = db.conn.execute("SELECT * FROM security_lots WHERE id=?", (sell_id,)).fetchone()
-    assert remaining is None
-    quantity, cost, avg_cost = db.security_pool_state(account_id, "VWRL")
-    assert quantity == pytest.approx(100.0)  # the sell is gone, full buy remains in the pool
-
-    db.close()
-
-
 def test_export_transactions_editable_csv_includes_category_account_and_tags(tmp_path):
     db = _db(tmp_path)
     db.add_account("Current Account", "asset", 0.0, currency="GBP")
@@ -1813,25 +1663,6 @@ def test_export_categories_editable_csv_writes_expected_columns(tmp_path):
     assert row["name"] == "Groceries Cat Export"
     assert row["kind"] == "need"
     assert row["monthly_budget"] == "200.0"
-
-
-def test_export_investments_editable_csv_writes_expected_columns(tmp_path):
-    db = _db(tmp_path)
-    db.add_account("Index Fund", "asset", 0.0, currency="GBP", subtype="investment")
-    acc_id = db.list_accounts()[0]["id"]
-    lot_id = db.add_security_transaction(acc_id, "VWRL", "2026-01-01", "buy", 100, 10.0)
-
-    out_path = tmp_path / "investments.csv"
-    count = export_investments_editable_csv(db, str(out_path))
-
-    assert count == 1
-    row = _read_csv(out_path)[0]
-    assert row["id"] == str(lot_id)
-    assert row["account"] == "Index Fund"
-    assert row["security"] == "VWRL"
-    assert row["action"] == "buy"
-    assert row["quantity"] == "100.0" or row["quantity"] == "100"
-    assert row["price"] == "10.0"
 
 
 def test_apply_transactions_csv_adds_a_new_row_with_blank_id(tmp_path):
@@ -2114,79 +1945,7 @@ def test_apply_categories_csv_accepts_income_kind(tmp_path):
     db.close()
 
 
-def test_apply_investments_csv_adds_and_edits(tmp_path):
-    db = _db(tmp_path)
-    db.add_account("Index Fund", "asset", 0.0, currency="GBP", subtype="investment")
-    acc_id = db.list_accounts()[0]["id"]
-    lot_id = db.add_security_transaction(acc_id, "VWRL", "2026-01-01", "buy", 100, 10.0)
-
-    csv_path = tmp_path / "investments.csv"
-    _write_csv(csv_path, ["id", "account", "security", "date", "action", "quantity", "price",
-                          "fees", "currency", "note", "realized_gain"], [
-        {"id": str(lot_id), "account": "Index Fund", "security": "VWRL", "date": "2026-01-01",
-         "action": "buy", "quantity": "100", "price": "12.0", "fees": "0", "currency": "GBP",
-         "note": "corrected price", "realized_gain": ""},
-        {"id": "", "account": "Index Fund", "security": "VWRL", "date": "2026-02-01",
-         "action": "sell", "quantity": "50", "price": "15.0", "fees": "0", "currency": "GBP",
-         "note": "", "realized_gain": ""},
-    ])
-
-    report = apply_investments_csv(db, str(csv_path))
-
-    assert report["added"] == 1
-    assert report["edited"] == 1
-    lots = db.list_securities(acc_id)
-    assert len(lots) >= 1
-    edited_lot = db.conn.execute("SELECT * FROM security_lots WHERE id=?", (lot_id,)).fetchone()
-    assert edited_lot["price"] == pytest.approx(12.0)
-
-    db.close()
-
-
-def test_apply_investments_csv_does_not_delete_an_existing_lot_whose_edit_has_a_typo(tmp_path):
-    db = _db(tmp_path)
-    db.add_account("Index Fund", "asset", 0.0, currency="GBP", subtype="investment")
-    acc_id = db.list_accounts()[0]["id"]
-    lot_id = db.add_security_transaction(acc_id, "VWRL", "2026-01-01", "buy", 100, 10.0)
-
-    csv_path = tmp_path / "investments.csv"
-    _write_csv(csv_path, ["id", "account", "security", "date", "action", "quantity", "price",
-                          "fees", "currency", "note", "realized_gain"], [
-        {"id": str(lot_id), "account": "Indx Fnd", "security": "VWRL", "date": "2026-01-01",  # typo
-         "action": "buy", "quantity": "100", "price": "10.0", "fees": "0", "currency": "GBP",
-         "note": "", "realized_gain": ""},
-    ])
-
-    report = apply_investments_csv(db, str(csv_path))
-
-    assert report["deleted"] == 0
-    assert len(report["skipped"]) == 1
-    remaining = db.conn.execute("SELECT * FROM security_lots WHERE id=?", (lot_id,)).fetchone()
-    assert remaining is not None  # still there, not deleted
-
-    db.close()
-
-
-def test_apply_investments_csv_deletes_a_lot_removed_from_the_file(tmp_path):
-    db = _db(tmp_path)
-    db.add_account("Index Fund", "asset", 0.0, currency="GBP", subtype="investment")
-    acc_id = db.list_accounts()[0]["id"]
-    lot_id = db.add_security_transaction(acc_id, "VWRL", "2026-01-01", "buy", 100, 10.0)
-
-    csv_path = tmp_path / "investments.csv"
-    _write_csv(csv_path, ["id", "account", "security", "date", "action", "quantity", "price",
-                          "fees", "currency", "note", "realized_gain"], [])  # lot omitted
-
-    report = apply_investments_csv(db, str(csv_path))
-
-    assert report["deleted"] == 1
-    remaining = db.conn.execute("SELECT * FROM security_lots WHERE id=?", (lot_id,)).fetchone()
-    assert remaining is None
-
-    db.close()
-
-
-def test_refresh_profile_csvs_writes_all_four_files(tmp_path):
+def test_refresh_profile_csvs_writes_all_three_files(tmp_path):
     db = _db(tmp_path)
     profile_dir = tmp_path / "profile"
     profile_dir.mkdir()
@@ -2196,7 +1955,6 @@ def test_refresh_profile_csvs_writes_all_four_files(tmp_path):
     assert (profile_dir / "transactions.csv").exists()
     assert (profile_dir / "accounts.csv").exists()
     assert (profile_dir / "categories.csv").exists()
-    assert (profile_dir / "investments.csv").exists()
 
     db.close()
 
@@ -2240,9 +1998,6 @@ def test_apply_profile_csvs_applies_accounts_before_transactions_so_new_names_re
          "tags": "", "status": ""},
     ])
     _write_csv(os.path.join(profile_dir, "categories.csv"), ["id", "name", "kind", "monthly_budget"], [])
-    _write_csv(os.path.join(profile_dir, "investments.csv"),
-               ["id", "account", "security", "date", "action", "quantity", "price", "fees",
-                "currency", "note", "realized_gain"], [])
 
     result = apply_profile_csvs(db, profile_dir, str(db_path))
 

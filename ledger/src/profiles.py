@@ -60,26 +60,21 @@ def _ensure_dir():
 
 def _migrate_flat_profiles():
     """One-time, transparent migration: older versions stored each profile
-    as a flat Profiles/<slug>.db (and Profiles/<slug>.db.locked) file.
-    Moves any such file into its own Profiles/<slug>/ subfolder under the
-    new name, so profiles created before this change keep working with no
-    action needed. Safe to call on every list_profiles() — a no-op once
-    everything's already migrated."""
+    as a flat Profiles/<slug>.db file. Moves any such file into its own
+    Profiles/<slug>/ subfolder under the new name, so profiles created
+    before this change keep working with no action needed. Safe to call
+    on every list_profiles() — a no-op once everything's already
+    migrated."""
     if not os.path.isdir(APP_DIR):
         return
     for fname in list(os.listdir(APP_DIR)):
         full = os.path.join(APP_DIR, fname)
-        if not os.path.isfile(full):
+        if not os.path.isfile(full) or not fname.endswith(".db"):
             continue
-        if fname.endswith(".db.locked"):
-            slug, new_name = fname[: -len(".db.locked")], DB_FILENAME + ".locked"
-        elif fname.endswith(".db"):
-            slug, new_name = fname[:-3], DB_FILENAME
-        else:
-            continue
+        slug = fname[:-3]
         profile_dir = os.path.join(APP_DIR, slug)
         os.makedirs(profile_dir, exist_ok=True)
-        dest = os.path.join(profile_dir, new_name)
+        dest = os.path.join(profile_dir, DB_FILENAME)
         if not os.path.exists(dest):
             shutil.move(full, dest)
 
@@ -127,8 +122,7 @@ def _existing_slugs() -> set:
         full = os.path.join(APP_DIR, entry)
         if not os.path.isdir(full):
             continue
-        if os.path.exists(os.path.join(full, DB_FILENAME)) or \
-                os.path.exists(os.path.join(full, DB_FILENAME + ".locked")):
+        if os.path.exists(os.path.join(full, DB_FILENAME)):
             slugs.add(entry)
     return slugs
 
@@ -136,12 +130,10 @@ def _existing_slugs() -> set:
 def list_profiles() -> list:
     """Scans Profiles/<slug>/ subfolders and returns one dict per profile,
     sorted by last_opened (most recent first). A subfolder only counts as
-    a profile if it actually contains profile.db or profile.db.locked —
-    other folders that might sit alongside profiles (e.g. a stray backups
-    directory) are silently skipped. Locked profiles can't have their meta
-    read without the password, so they're listed with a placeholder
-    name/flag and must be unlocked before opening.
-    Shape: {slug, name, avatar, color, created, last_opened, locked}."""
+    a profile if it actually contains profile.db — other folders that
+    might sit alongside profiles (e.g. a stray backups directory) are
+    silently skipped.
+    Shape: {slug, name, avatar, color, created, last_opened}."""
     _ensure_dir()
     _migrate_flat_profiles()
     out = []
@@ -150,28 +142,17 @@ def list_profiles() -> list:
         if not os.path.isdir(profile_dir):
             continue
         db_path = os.path.join(profile_dir, DB_FILENAME)
-        locked_path = db_path + ".locked"
-        if os.path.exists(db_path):
-            meta = _read_meta(db_path)
-            out.append({
-                "slug": slug,
-                "name": meta.get("profile_name") or slug.replace("_", " ").title(),
-                "avatar": meta.get("avatar") or AVATARS[idx % len(AVATARS)],
-                "color": meta.get("color") or PALETTE[idx % len(PALETTE)],
-                "created": meta.get("created") or "",
-                "last_opened": meta.get("last_opened") or "",
-                "locked": False,
-            })
-        elif os.path.exists(locked_path):
-            out.append({
-                "slug": slug,
-                "name": slug.replace("_", " ").title() + " (locked)",
-                "avatar": "🔒",
-                "color": "#666C82",
-                "created": "",
-                "last_opened": "",
-                "locked": True,
-            })
+        if not os.path.exists(db_path):
+            continue
+        meta = _read_meta(db_path)
+        out.append({
+            "slug": slug,
+            "name": meta.get("profile_name") or slug.replace("_", " ").title(),
+            "avatar": meta.get("avatar") or AVATARS[idx % len(AVATARS)],
+            "color": meta.get("color") or PALETTE[idx % len(PALETTE)],
+            "created": meta.get("created") or "",
+            "last_opened": meta.get("last_opened") or "",
+        })
     return sorted(out, key=lambda p: p["last_opened"], reverse=True)
 
 
@@ -279,42 +260,6 @@ def rename_profile(slug: str, new_name: str):
     if new_name.strip():
         db.set_meta("profile_name", new_name.strip())
     db.close()
-
-
-def lock_profile(slug: str, password: str):
-    """Password-protects a profile's .db file (see crypto_utils for the
-    honest limitations of this). The .db file is replaced by a .db.locked
-    sidecar; caller must have already closed any open Database connection
-    to this profile before calling this."""
-    import crypto_utils
-    from finance_core import Database
-    path = db_path_for(slug)
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"No profile found for slug '{slug}'.")
-    db = Database(path)
-    db.set_encrypted(True)
-    db.close()
-    return crypto_utils.lock_file(path, password)
-
-
-def unlock_profile(slug: str, password: str):
-    """Decrypts a .db.locked file back into a usable .db file. Raises
-    RuntimeError on wrong password."""
-    import crypto_utils
-    from finance_core import Database
-    locked_path = os.path.join(profile_dir_for(slug), DB_FILENAME + crypto_utils.LOCKED_SUFFIX)
-    dest_path = crypto_utils.unlock_file(locked_path, password)
-    db = Database(dest_path)
-    db.set_encrypted(False)
-    db.touch_last_opened()
-    db.close()
-    os.remove(locked_path)
-    return dest_path
-
-
-def is_profile_locked(slug: str) -> bool:
-    import crypto_utils
-    return os.path.exists(os.path.join(profile_dir_for(slug), DB_FILENAME + crypto_utils.LOCKED_SUFFIX))
 
 
 def delete_profile(slug: str, delete_data: bool = False):

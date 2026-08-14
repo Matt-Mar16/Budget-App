@@ -1,4 +1,5 @@
 import os
+import shutil
 
 import profiles
 
@@ -92,3 +93,47 @@ def test_delete_profile_removes_the_whole_profile_folder(tmp_path, monkeypatch):
 
     assert ok is True
     assert not profile_dir.exists()
+
+
+def test_backup_and_restore_a_profile_folder_preserves_real_data(tmp_path, monkeypatch):
+    """Verifies the documented backup contract (README: "the whole Profiles
+    folder is your backup unit") actually works end to end: copy the
+    profile's subfolder out, delete the profile, copy the backup back in,
+    and confirm the app sees it again with the real data intact."""
+    from finance_core import Database
+
+    _isolate(tmp_path, monkeypatch)
+    profile = profiles.create_profile("Backup Restore Test")
+    slug = profile["slug"]
+
+    db = Database(profiles.db_path_for(slug))
+    db.add_account("Checking", "asset", 250.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_transaction("2026-08-01", "Payday", None, 1000.0, "GBP", account_id=acc_id)
+    db.close()
+
+    profile_dir = tmp_path / slug
+    backup_dir = tmp_path.parent / f"{slug}_backup"
+    shutil.copytree(profile_dir, backup_dir)
+
+    ok = profiles.delete_profile(slug, delete_data=True)
+    assert ok is True
+    assert not profile_dir.exists()
+    assert slug not in [p["slug"] for p in profiles.list_profiles()]
+
+    shutil.copytree(backup_dir, profile_dir)
+
+    restored = next(p for p in profiles.list_profiles() if p["slug"] == slug)
+    assert restored["name"] == "Backup Restore Test"
+
+    db = Database(profiles.db_path_for(slug))
+    accounts = db.list_accounts()
+    assert len(accounts) == 1
+    assert accounts[0]["name"] == "Checking"
+    assert accounts[0]["balance"] == 1250.0  # 250 opening + 1000 payday
+    transactions = db.list_transactions()
+    assert len(transactions) == 1
+    assert transactions[0]["payee"] == "Payday"
+    db.close()
+
+    shutil.rmtree(backup_dir)

@@ -55,12 +55,7 @@ artifact left over from an earlier version and is no longer read).
   ledger, export a statement CSV, configure a credit card's cashback rate/
   cap/destination and payment due day.
 - **Net Worth / FI** — net worth over time, FI progress, net worth by
-  account type, investment holdings summary, an illustrative growth
-  projection.
-- **Investments** — buy/sell transactions per security with UK Section 104
-  average-cost pooling (see caveat below), realized gains.
-- **Tax** — this UK tax year's realized capital gains vs. the annual exempt
-  amount (not tax advice — a rough estimate you should verify).
+  account type.
 - **Rewards** — cashback earned/redeemed, the spare-change round-up jar.
 - **Settings** — currency, theme, month start day, navigation customization,
   data files, profile management.
@@ -68,7 +63,11 @@ artifact left over from an earlier version and is no longer read).
 Any tab except Dashboard and Settings can be hidden from the sidebar
 (Settings → Customize Navigation) if you don't use it.
 
-## Accounts: cash, credit cards, and investments
+Investment/portfolio tracking (buy/sell transactions, capital gains) isn't
+part of this app — it's planned as a separate, later project instead of
+being duplicated here.
+
+## Accounts: cash and credit cards
 Everything rolls into net worth correctly, but each account type gets
 purpose-built treatment. Every transaction tagged with a "Paid from" account
 — including ones auto-posted from Recurring — keeps that account's balance
@@ -83,25 +82,15 @@ its account is converted using your FX rates before adjusting the balance.
   count toward your emergency-fund-months metric.
 - **Credit Cards** — a credit limit, a cashback rate + optional monthly cap,
   a payment due day, and a cashback destination (accumulate for manual
-  redemption, auto-invest into an investment account, or sweep into the
-  Round-Up Jar). The Accounts tab shows a **utilization bar per card**
-  (green under 30%, amber to 70%, red above — the thresholds that matter for
-  credit scores) and a due-date reminder that surfaces on the Dashboard
-  within 7 days.
-- **Investments** — a contributions (cost-basis) figure separate from
-  balance, so the app can show **growth in £ and %** (balance − what you
-  actually put in), not just a raw number. Use "Add Contribution" when you
-  pay money in, or "Update Market Value" for a mark-to-market price update —
-  the two are tracked differently on purpose so growth stays meaningful. Set
-  an expected annual return, a planned monthly contribution, and a return
-  volatility to get an illustrative 10-year compounding **projection chart**
-  with a low/high range, clearly labelled as illustrative since no return is
-  guaranteed.
+  redemption, or sweep into the Round-Up Jar). The Accounts tab shows a
+  **utilization bar per card** (green under 30%, amber to 70%, red above —
+  the thresholds that matter for credit scores) and a due-date reminder
+  that surfaces on the Dashboard within 7 days.
 - **"Edit Selected Account…"** lets you correct name/currency/balance/
-  liquid/credit-limit/cashback/due-day/investment-assumption fields directly
-  with no transaction recorded — for backfilling a starting balance without
-  logging every historical transaction. Use "Reconcile…" instead if you
-  want the correction to show up as a real, traceable ledger entry.
+  liquid/credit-limit/cashback/due-day fields directly with no transaction
+  recorded — for backfilling a starting balance without logging every
+  historical transaction. Use "Reconcile…" instead if you want the
+  correction to show up as a real, traceable ledger entry.
 
 ## Custom month start day
 By default the app's reporting "month" is the calendar month. If you're paid
@@ -109,7 +98,7 @@ on, say, the 25th, set **Month start day** in Settings to `25` and every
 month-based number (Dashboard, Budgets, Insights, Forecast's run-rate) shifts
 to run 25th-to-24th instead — budgets and safe-to-spend line up with when
 money actually arrives, not the calendar. Doesn't affect recurring bill due
-dates or the UK tax year, which stay on their own real-world schedules. The
+dates, which stay on their own real-world schedule. The
 Insights spending heatmap deliberately stays on the plain calendar month,
 since a weekday-grid chart can't represent a period that spans two calendar
 months.
@@ -127,7 +116,7 @@ months.
   round-to amount (e.g. nearest £1) and a multiplier (1×–10×), and every
   card expense sweeps the difference into a Round-Up Jar automatically. The
   Rewards tab shows the jar balance, a cumulative round-ups-over-time chart,
-  and a "Sweep Now" button to move the jar into savings or investments.
+  and a "Sweep Now" button to move the jar into savings.
 
 ## Phone entry
 `../src/inbox_sync.py`/`sync_inbox.py` (needs `openpyxl` — see below) build
@@ -140,8 +129,8 @@ whatever's there, turns it into real transactions (including paired
 what it read, and clears the sheet.
 
 ## Bulk-editing via CSV
-Every profile gets four editable CSV files (`transactions.csv`,
-`accounts.csv`, `categories.csv`, `investments.csv`) for quick bulk edits or
+Every profile gets three editable CSV files (`transactions.csv`,
+`accounts.csv`, `categories.csv`) for quick bulk edits or
 backfilling historical data outside the GUI — Settings → Data Files →
 "Refresh CSVs from App" to export, "Apply Changes from CSVs…" to read edits
 back in (backs up the database first). A blank `id` column adds a row, an
@@ -170,35 +159,15 @@ All hand-drawn on `tk.Canvas` — no matplotlib, no extra installs:
 - Progress ring: FI progress.
 - Per-card credit utilization bars.
 - Cumulative round-up savings line chart and per-card cashback bar chart.
-- 10-year investment growth projection with an illustrative low/high band.
-
-## Investments — known limitation
-Capital-gains tracking implements **plain UK Section 104 average-cost
-pooling only**. It does **not** implement HMRC's same-day rule or the
-30-day "bed and breakfast" rule, both of which would need to apply before
-pooling for a fully correct UK CGT figure — the Tax tab's own copy flags
-this too. Treat the Tax tab's numbers as a starting estimate, not a filing.
-
-## Profile encryption
-Settings → "Lock This Profile With a Password…" encrypts a profile's `.db`
-into a `.db.locked` sidecar using a stdlib-only PBKDF2-HMAC-SHA256 +
-HMAC-SHA256 counter-mode cipher (Python's `zipfile` can't actually write
-encrypted archives, hence the hand-rolled construction). Locked profiles
-show a 🔒 in the launcher and prompt for the password to reopen. Honest
-caveat: this is a solid deterrent against casual snooping, but it's a small
-hand-rolled construction that hasn't had the independent security review a
-maintained library gets — full-disk encryption (BitLocker/FileVault/LUKS)
-is still the stronger option for anything highly sensitive.
 
 ## File layout
 - `budget_app.py` (one level up) — the UI: profile launcher, main window,
   all tabs.
 - `finance_core.py` — SQLite data layer + all financial math (safe-to-spend,
   savings rate, debt payoff simulation, recurring transactions, cashback,
-  round-ups, credit utilization, investment growth, forecasting, etc.).
+  round-ups, credit utilization, forecasting, etc.).
 - `profiles.py` — the multi-profile registry (scans `Profiles/` directly).
 - `theme.py` — fonts, color palettes, and ttk styling.
-- `crypto_utils.py` — stdlib-only password-lock cipher for profile encryption.
 - `charts.py` — dependency-free Canvas chart drawing.
 - `inbox_sync.py` / `sync_inbox.py` — the phone-entry bridge (needs
   `openpyxl`, isolated in its own use — see `requirements.txt`).

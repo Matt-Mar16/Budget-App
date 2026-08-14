@@ -13,6 +13,8 @@ simplest possible API for the tabs to call on refresh().
 import calendar
 import tkinter as tk
 
+import theme
+
 
 # --------------------------------------------------------------------------
 # Dirty-tracking: skip a full canvas rebuild when nothing about to be drawn
@@ -131,7 +133,7 @@ def draw_line_chart(canvas: tk.Canvas, values, labels, colors, unit_fmt=None,
 
     if len(values) < 2:
         canvas.create_text(w / 2, h / 2, text=empty_text, fill=colors["text_faint"],
-                            font=("TkDefaultFont", 10))
+                            font=(theme.Fonts.family, 10))
         return
 
     vmin, vmax = min(values), max(values)
@@ -152,7 +154,7 @@ def draw_line_chart(canvas: tk.Canvas, values, labels, colors, unit_fmt=None,
         canvas.create_line(pad_l, y, w - pad_r, y, fill=colors["grid"], width=1)
         label = unit_fmt(val) if unit_fmt else f"{val:,.0f}"
         canvas.create_text(pad_l - 8, y, text=label, fill=colors["text_faint"],
-                            font=("TkDefaultFont", 8), anchor="e")
+                            font=(theme.Fonts.family, 8), anchor="e")
 
     n = len(values)
     pts = []
@@ -194,12 +196,12 @@ def draw_line_chart(canvas: tk.Canvas, values, labels, colors, unit_fmt=None,
                                 outline=line_color, width=2)
             if i < len(labels):
                 canvas.create_text(x, h - pad_b + 14, text=labels[i], fill=colors["text_faint"],
-                                    font=("TkDefaultFont", 8))
+                                    font=(theme.Fonts.family, 8))
     # always label the final point value
     last_x, last_y = pts[-1]
     canvas.create_text(last_x, max(last_y - 16, 12),
                         text=(unit_fmt(values[-1]) if unit_fmt else f"{values[-1]:,.0f}"),
-                        fill=colors["text"], font=("TkDefaultFont", 9, "bold"), anchor="s")
+                        fill=colors["text"], font=(theme.Fonts.family, 9, "bold"), anchor="s")
 
 
 # --------------------------------------------------------------------------
@@ -227,7 +229,7 @@ def draw_bar_chart(canvas: tk.Canvas, categories, series, colors, unit_fmt=None,
     all_vals = [v for _, _, vals in series for v in vals]
     if not all_vals or not categories:
         canvas.create_text(w / 2, h / 2, text="No data yet — add a few transactions.",
-                            fill=colors["text_faint"], font=("TkDefaultFont", 10))
+                            fill=colors["text_faint"], font=(theme.Fonts.family, 10))
         return
     vmax = max(all_vals) or 1
 
@@ -238,7 +240,7 @@ def draw_bar_chart(canvas: tk.Canvas, categories, series, colors, unit_fmt=None,
         val = vmax * frac
         label = unit_fmt(val) if unit_fmt else f"{val:,.0f}"
         canvas.create_text(pad_l - 8, y, text=label, fill=colors["text_faint"],
-                            font=("TkDefaultFont", 8), anchor="e")
+                            font=(theme.Fonts.family, 8), anchor="e")
 
     n_cat = len(categories)
     n_series = len(series)
@@ -254,7 +256,7 @@ def draw_bar_chart(canvas: tk.Canvas, categories, series, colors, unit_fmt=None,
         color = colors.get(color_key, color_key)
         canvas.create_rectangle(lx, 6, lx + 10, 16, fill=color, outline="")
         canvas.create_text(lx + 15, 11, text=label, fill=colors["text_dim"],
-                            font=("TkDefaultFont", 8), anchor="w")
+                            font=(theme.Fonts.family, 8), anchor="w")
         lx += 15 + len(label) * 6 + 16
 
     for ci, cat in enumerate(categories):
@@ -270,7 +272,7 @@ def draw_bar_chart(canvas: tk.Canvas, categories, series, colors, unit_fmt=None,
             if bar_h > 1:
                 rounded_rect(canvas, x0, y0, x1, y1, r=min(5, bar_w / 2), fill=color, outline="")
         canvas.create_text(gx0 + group_w / 2, h - pad_b + 14, text=cat,
-                            fill=colors["text_faint"], font=("TkDefaultFont", 8))
+                            fill=colors["text_faint"], font=(theme.Fonts.family, 8))
 
 
 # --------------------------------------------------------------------------
@@ -301,7 +303,7 @@ def draw_donut_chart(canvas: tk.Canvas, segments, colors, center_label="", cente
         canvas.create_oval(cx - r_out, cy - r_out, cx + r_out, cy + r_out,
                             outline=colors["grid"], width=2)
         canvas.create_text(cx, cy, text="No spend yet", fill=colors["text_faint"],
-                            font=("TkDefaultFont", 9))
+                            font=(theme.Fonts.family, 9))
     else:
         start = 90.0
         for label, value, color in segments:
@@ -315,9 +317,9 @@ def draw_donut_chart(canvas: tk.Canvas, segments, colors, center_label="", cente
         canvas.create_oval(cx - r_in, cy - r_in, cx + r_in, cy + r_in,
                             fill=colors["card"], outline="")
         canvas.create_text(cx, cy - 8, text=center_label, fill=colors["text"],
-                            font=("TkDefaultFont", 13, "bold"))
+                            font=(theme.Fonts.family, 13, "bold"))
         canvas.create_text(cx, cy + 12, text=center_sub, fill=colors["text_faint"],
-                            font=("TkDefaultFont", 8))
+                            font=(theme.Fonts.family, 8))
 
     # legend to the right
     lx = diam + 40
@@ -326,7 +328,7 @@ def draw_donut_chart(canvas: tk.Canvas, segments, colors, center_label="", cente
         pct = f"{(value / total * 100):.0f}%" if total > 0 else "0%"
         canvas.create_oval(lx, ly, lx + 10, ly + 10, fill=color, outline="")
         canvas.create_text(lx + 16, ly + 5, text=f"{label} · {pct}", fill=colors["text_dim"],
-                            font=("TkDefaultFont", 9), anchor="w")
+                            font=(theme.Fonts.family, 9), anchor="w")
         ly += 22
 
 
@@ -360,7 +362,7 @@ def draw_calendar_heatmap(canvas: tk.Canvas, year, month, daily_totals, colors,
     for col, label in enumerate(weekday_labels):
         cx = side_pad + col * cell_w + cell_w / 2
         canvas.create_text(cx, top_pad / 2, text=label, fill=colors["text_faint"],
-                            font=("TkDefaultFont", 8))
+                            font=(theme.Fonts.family, 8))
 
     max_val = max(daily_totals.values()) if daily_totals else 0
     accent = colors.get("bad", colors["accent"])
@@ -377,91 +379,11 @@ def draw_calendar_heatmap(canvas: tk.Canvas, year, month, daily_totals, colors,
             fill = lerp_color(colors["card"], accent, t)
             rounded_rect(canvas, x0, y0, x1, y1, r=4, fill=fill, outline=colors["grid"])
             canvas.create_text(x0 + 7, y0 + 8, text=str(day), fill=colors["text_dim"],
-                                font=("TkDefaultFont", 7), anchor="w")
+                                font=(theme.Fonts.family, 7), anchor="w")
             if value > 0:
                 label_text = unit_fmt(value) if unit_fmt else f"{value:,.0f}"
                 canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2 + 6, text=label_text,
-                                    fill=colors["text"], font=("TkDefaultFont", 7))
-
-
-def draw_band_chart(canvas: tk.Canvas, mid_values, low_values, high_values, labels, colors,
-                     unit_fmt=None, line_color=None,
-                     empty_text="Add an investment account with an expected return to see a projection here.",
-                     force=False):
-    """Like draw_line_chart, but shades a low/high illustrative range
-    (e.g. from return_volatility_pct) around the mid projection line,
-    instead of pretending a single line is a guarantee."""
-    w = canvas.winfo_width() or int(canvas["width"])
-    h = canvas.winfo_height() or int(canvas["height"])
-    if w < 10 or h < 10:
-        canvas.after(50, lambda: draw_band_chart(canvas, mid_values, low_values, high_values, labels,
-                                                   colors, unit_fmt, line_color, empty_text, force)
-                     if canvas.winfo_exists() else None)
-        return
-    sig = _sig("band", mid_values, low_values, high_values, labels, colors.get("card"), w, h)
-    if not force and _skip_if_clean(canvas, "_sig_band", sig):
-        return
-    canvas.delete("all")
-
-    pad_l, pad_r, pad_t, pad_b = 54, 20, 20, 28
-    plot_w = w - pad_l - pad_r
-    plot_h = h - pad_t - pad_b
-    line_color = line_color or colors["accent"]
-    canvas.create_rectangle(0, 0, w, h, fill=colors["card"], outline="")
-
-    if len(mid_values) < 2:
-        canvas.create_text(w / 2, h / 2, text=empty_text, fill=colors["text_faint"],
-                            font=("TkDefaultFont", 10))
-        return
-
-    all_vals = list(mid_values) + list(low_values) + list(high_values)
-    vmin, vmax = min(all_vals), max(all_vals)
-    if vmin == vmax:
-        vmin -= 1
-        vmax += 1
-    span = vmax - vmin
-    pad_span = span * 0.12
-    vmin -= pad_span
-    vmax += pad_span
-    span = vmax - vmin
-
-    for i in range(4):
-        frac = i / 3
-        y = pad_t + plot_h * (1 - frac)
-        val = vmin + span * frac
-        canvas.create_line(pad_l, y, w - pad_r, y, fill=colors["grid"], width=1)
-        label = unit_fmt(val) if unit_fmt else f"{val:,.0f}"
-        canvas.create_text(pad_l - 8, y, text=label, fill=colors["text_faint"],
-                            font=("TkDefaultFont", 8), anchor="e")
-
-    n = len(mid_values)
-
-    def to_pts(values):
-        return [(pad_l + (plot_w * i / (n - 1) if n > 1 else 0),
-                  pad_t + plot_h * (1 - (v - vmin) / span)) for i, v in enumerate(values)]
-
-    low_pts, high_pts, mid_pts = to_pts(low_values), to_pts(high_values), to_pts(mid_values)
-
-    band_color = lerp_color(colors["card"], line_color, 0.22)
-    poly = low_pts + list(reversed(high_pts))
-    flat = [c for pt in poly for c in pt]
-    if len(flat) >= 6:
-        canvas.create_polygon(flat, fill=band_color, outline="")
-
-    flat_mid = [c for pt in mid_pts for c in pt]
-    canvas.create_line(*flat_mid, fill=line_color, width=2.5, smooth=True, capstyle="round")
-
-    step = max(1, n // 6)
-    for i, (x, _) in enumerate(mid_pts):
-        if i == n - 1 or i % step == 0:
-            if i < len(labels):
-                canvas.create_text(x, h - pad_b + 14, text=labels[i], fill=colors["text_faint"],
-                                    font=("TkDefaultFont", 8))
-
-    last_x, last_y = mid_pts[-1]
-    canvas.create_text(last_x, max(last_y - 16, 12),
-                        text=(unit_fmt(mid_values[-1]) if unit_fmt else f"{mid_values[-1]:,.0f}"),
-                        fill=colors["text"], font=("TkDefaultFont", 9, "bold"), anchor="s")
+                                    fill=colors["text"], font=(theme.Fonts.family, 7))
 
 
 # --------------------------------------------------------------------------
@@ -490,6 +412,6 @@ def draw_progress_ring(canvas: tk.Canvas, pct, colors, label="", ring_color=None
         canvas.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=-360 * pct,
                            outline=ring_color, width=8, style="arc")
     canvas.create_text(cx, cy - 6, text=f"{pct*100:.0f}%", fill=colors["text"],
-                        font=("TkDefaultFont", 16, "bold"))
+                        font=(theme.Fonts.family, 16, "bold"))
     canvas.create_text(cx, cy + 16, text=label, fill=colors["text_faint"],
-                        font=("TkDefaultFont", 8))
+                        font=(theme.Fonts.family, 8))
