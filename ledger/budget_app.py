@@ -1677,44 +1677,14 @@ class TransactionsTab(ScrollableTab):
         self._refresh_reimbursements()
 
     def add_transaction(self):
-        date = self.date_var.get().strip()
-        payee = self.payee_var.get().strip()
-        cat_name = self.category_var.get().strip()
-        amount_raw = self.amount_var.get().strip()
-        currency = self.currency_var.get().strip().upper() or self.app.reporting_currency()
-        note = self.note_var.get().strip()
-
-        try:
-            datetime.date.fromisoformat(date)
-        except ValueError:
-            messagebox.showerror("Invalid date", "Please use YYYY-MM-DD format.")
+        ok, error = submit_new_transaction(
+            self.app, self.date_var.get(), self.payee_var.get(), self.category_var.get(),
+            self.amount_var.get(), self.currency_var.get(), self.note_var.get(),
+            self.account_var.get(), self.tags_var.get())
+        if not ok:
+            if error:
+                messagebox.showerror("Invalid entry", error)
             return
-        try:
-            amount = float(amount_raw)
-        except ValueError:
-            messagebox.showerror("Invalid amount", "Amount must be a number (negative for expenses).")
-            return
-
-        cat_id = self.categories_by_name.get(cat_name)
-        account = self.accounts_by_name.get(self.account_var.get().strip())
-        account_id = account["id"] if account else None
-
-        if cat_id and amount < 0:
-            from finance_core import would_exceed_budget
-            exceeds, spent_after, budget = would_exceed_budget(self.app.db, cat_id, amount, currency)
-            if exceeds:
-                cur = self.app.reporting_currency()
-                proceed = messagebox.askyesno(
-                    "Over budget",
-                    f"This would bring '{cat_name}' spending to {fmt_money(spent_after, cur)}, "
-                    f"over its {fmt_money(budget, cur)} monthly budget. Add it anyway?")
-                if not proceed:
-                    return
-
-        tx_id = self.app.db.add_transaction(date, payee, cat_id, amount, currency, note, account_id=account_id)
-        tag_names = [t.strip() for t in self.tags_var.get().split(",") if t.strip()]
-        if tag_names:
-            self.app.db.set_transaction_tags(tx_id, tag_names)
         self.payee_var.set("")
         self.amount_var.set("")
         self.note_var.set("")
