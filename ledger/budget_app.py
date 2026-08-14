@@ -591,7 +591,9 @@ def submit_new_transaction(app, date, payee, category_name, amount_raw, currency
     except ValueError:
         return False, "Amount must be a number (negative for expenses)."
 
-    categories_by_name = {c["name"]: c["id"] for c in app.db.list_categories()}
+    categories = app.db.list_categories()
+    categories_by_name = {c["name"]: c["id"] for c in categories}
+    category_kind_by_id = {c["id"]: c["kind"] for c in categories}
     accounts_by_name = {a["name"]: a for a in app.db.list_accounts()}
     cat_id = categories_by_name.get(category_name.strip())
     account = accounts_by_name.get(account_name.strip())
@@ -599,6 +601,13 @@ def submit_new_transaction(app, date, payee, category_name, amount_raw, currency
     currency = currency.strip().upper() or app.reporting_currency()
     payee = payee.strip()
     note = note.strip()
+
+    if cat_id:
+        kind = category_kind_by_id.get(cat_id)
+        if kind == "income" and amount < 0:
+            return False, "An expense can't be filed under an income category."
+        if kind and kind != "income" and amount > 0:
+            return False, "Income can't be filed under a spending category."
 
     if cat_id and amount < 0:
         from finance_core import would_exceed_budget
@@ -1029,6 +1038,9 @@ class DashboardTab(ScrollableTab):
 
     def _apply_layout(self):
         layout = resolve_dashboard_layout(self.app.db)
+        if layout == getattr(self, "_applied_layout", None):
+            return
+        self._applied_layout = layout
         for entry in layout:
             self.section_frames[entry["key"]].pack_forget()
         for entry in layout:
@@ -1054,7 +1066,7 @@ class DashboardTab(ScrollableTab):
     def open_add_transaction_dialog(self):
         win, content = make_scrollable_toplevel(self, "Add Transaction", "420x460")
         cats = [c["name"] for c in self.app.db.list_categories()]
-        accounts = [a["name"] for a in self.app.db.list_accounts()]
+        accounts = [a["name"] for a in self.app.db.list_accounts() if a["subtype"] != "roundup_pot"]
 
         ttk.Label(content, text="Date (YYYY-MM-DD)", style="TLabel").pack(anchor="w", padx=14, pady=(14, 2))
         date_var = tk.StringVar(value=self.app.today.isoformat())
@@ -1122,7 +1134,7 @@ class DashboardTab(ScrollableTab):
             for b in bills:
                 row = ttk.Frame(self.needs_attention_rows_frame, style="Card.TFrame")
                 row.pack(fill="x", pady=2)
-                ttk.Label(row, text=f"📅 {b['name']} ({fmt_money(b['amount'], cur)}) — "
+                ttk.Label(row, text=f"📅 {b['name']} ({fmt_money(b['amount'], b['currency'])}) — "
                                      f"{b['next_date']}", style="Card.TLabel").pack(side="left")
                 ttk.Button(row, text="Post Now",
                            command=lambda rid=b["id"]: self._post_bill_now(rid)).pack(side="right")

@@ -221,3 +221,43 @@ def test_submit_new_transaction_proceeds_when_over_budget_confirmed(tmp_path):
     assert ok is True
     assert len(db.list_transactions()) == 1
     db.close()
+
+
+def test_submit_new_transaction_rejects_a_negative_amount_in_an_income_category(tmp_path):
+    db = _db(tmp_path)
+    db.add_category("Salary", "income")
+    app = _FakeApp(db)
+
+    ok, error = submit_new_transaction(
+        app, "2026-09-01", "Employer", "Salary", "-100", "GBP", "", "")
+
+    assert ok is False
+    assert error is not None
+    assert db.list_transactions() == []
+    db.close()
+
+
+def test_submit_new_transaction_rejects_a_positive_amount_in_a_spending_category(tmp_path):
+    db = _db(tmp_path)
+    app = _FakeApp(db)
+
+    ok, error = submit_new_transaction(
+        app, "2026-09-01", "Tesco", "Groceries", "100", "GBP", "", "")
+
+    assert ok is False
+    assert error is not None
+    assert db.list_transactions() == []
+    db.close()
+
+
+def test_submit_new_transaction_accepts_uncategorized_regardless_of_amount_sign(tmp_path):
+    db = _db(tmp_path)
+    app = _FakeApp(db)
+
+    ok, error = submit_new_transaction(
+        app, "2026-09-01", "Mystery", "", "100", "GBP", "", "")
+
+    assert ok is True
+    assert error is None
+    assert len(db.list_transactions()) == 1
+    db.close()
