@@ -915,8 +915,23 @@ class DashboardTab(ScrollableTab):
 
     def _build(self):
         c = self.app.c
+        self.section_frames = {}
+        self.section_handles = {}
+
+        def start_section(key, label):
+            outer = ttk.Frame(self)
+            handle_row = ttk.Frame(outer)
+            handle_row.pack(fill="x")
+            handle = ttk.Label(handle_row, text="⠿", style="Dim.TLabel", cursor="fleur")
+            handle.pack(side="left")
+            ttk.Label(handle_row, text=label, style="Dim.TLabel").pack(side="left", padx=(4, 0))
+            self.section_frames[key] = outer
+            self.section_handles[key] = handle
+            return outer
+
         # Safe-to-spend hero
-        hero = Card(self, title="")
+        hero_section = start_section("hero", "Safe to Spend")
+        hero = Card(hero_section, title="")
         hero.pack(fill="x", pady=(0, 10))
         ttk.Label(hero, text="SAFE TO SPEND / DAY", style="CardDim.TLabel").pack(anchor="w")
         self.safe_to_spend_label = ttk.Label(hero, text="—", style="Hero.TLabel")
@@ -925,7 +940,8 @@ class DashboardTab(ScrollableTab):
         self.safe_to_spend_sub.pack(anchor="w", pady=(4, 0))
 
         # Metrics grid
-        grid = ttk.Frame(self)
+        metrics_section = start_section("metrics", "Key Metrics")
+        grid = ttk.Frame(metrics_section)
         grid.pack(fill="x", pady=(0, 10))
         self.metric_labels = {}
         # Decorative per-card accent colors -- Income/Expenses keep their
@@ -942,8 +958,16 @@ class DashboardTab(ScrollableTab):
             grid.columnconfigure(i % 3, weight=1)
             self.metric_labels[m] = val
 
+        # Quick Actions -- content added in Task 6
+        quick_actions_section = start_section("quick_actions", "Quick Actions")
+        qa_card = Card(quick_actions_section, title="Quick Actions")
+        qa_card.pack(fill="x", pady=(0, 10))
+        self.quick_actions_row = ttk.Frame(qa_card, style="Card.TFrame")
+        self.quick_actions_row.pack(fill="x")
+
         # Charts row: allocation donut + 6-month trend bar chart
-        charts_row = ttk.Frame(self)
+        charts_section = start_section("charts", "Charts")
+        charts_row = ttk.Frame(charts_section)
         charts_row.pack(fill="x", pady=(0, 10))
         charts_row.columnconfigure(0, weight=1)
         charts_row.columnconfigure(1, weight=2)
@@ -971,8 +995,16 @@ class DashboardTab(ScrollableTab):
                                        bg=c["card"])
         self.trend_canvas.pack(fill="both", expand=True)
 
+        # Needs Attention -- content added in Task 7
+        needs_attention_section = start_section("needs_attention", "Needs Attention")
+        na_card = Card(needs_attention_section, title="Needs Attention")
+        na_card.pack(fill="x", pady=(0, 10))
+        self.needs_attention_rows_frame = ttk.Frame(na_card, style="Card.TFrame")
+        self.needs_attention_rows_frame.pack(fill="x")
+
         # Flags panel
-        flags_card = Card(self, title="Flags & Nudges")
+        flags_section = start_section("flags", "Flags & Nudges")
+        flags_card = Card(flags_section, title="Flags & Nudges")
         flags_card.pack(fill="both", expand=True)
         self.flags_text = tk.Text(flags_card, wrap="word", state="disabled", height=10,
                                    bg=c["card"], fg=c["text"], insertbackground=c["text"],
@@ -987,7 +1019,31 @@ class DashboardTab(ScrollableTab):
         self.flags_text.tag_configure("reward", foreground="#E0A93E")
         self.flags_text.tag_configure("idle", foreground="#4AB8C4")
 
+        self._apply_layout()
+
+    def _apply_layout(self):
+        layout = resolve_dashboard_layout(self.app.db)
+        for entry in layout:
+            self.section_frames[entry["key"]].pack_forget()
+        for entry in layout:
+            if entry["visible"]:
+                self.section_frames[entry["key"]].pack(fill="x", pady=5)
+        visible_rows = [
+            (self.section_handles[e["key"]], self.section_frames[e["key"]], e["key"])
+            for e in layout if e["visible"]
+        ]
+        if visible_rows:
+            enable_drag_reorder(visible_rows, self._on_reorder)
+
+    def _on_reorder(self, ordered_keys):
+        layout = resolve_dashboard_layout(self.app.db)
+        hidden_entries = [e for e in layout if not e["visible"]]
+        new_layout = [{"key": k, "visible": True} for k in ordered_keys] + hidden_entries
+        self.app.db.set_dashboard_layout(new_layout)
+        self._apply_layout()
+
     def refresh(self):
+        self._apply_layout()
         db = self.app.db
         c = self.app.c
         y, m = self.app.view_year, self.app.view_month
