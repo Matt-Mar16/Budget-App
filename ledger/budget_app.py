@@ -581,6 +581,7 @@ def submit_new_transaction(app, date, payee, category_name, amount_raw, currency
     if confirm_over_budget is None:
         confirm_over_budget = messagebox.askyesno
 
+    date = date.strip()
     try:
         datetime.date.fromisoformat(date)
     except ValueError:

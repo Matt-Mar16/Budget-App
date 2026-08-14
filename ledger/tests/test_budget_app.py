@@ -154,6 +154,19 @@ def test_submit_new_transaction_rejects_an_invalid_date(tmp_path):
     db.close()
 
 
+def test_submit_new_transaction_accepts_date_with_whitespace(tmp_path):
+    db = _db(tmp_path)
+    app = _FakeApp(db)
+
+    ok, error = submit_new_transaction(app, "  2026-09-01  ", "Tesco", "", "-10", "GBP", "", "")
+
+    assert ok is True
+    assert error is None
+    tx = db.list_transactions()[0]
+    assert tx["date"] == "2026-09-01"
+    db.close()
+
+
 def test_submit_new_transaction_rejects_a_non_numeric_amount(tmp_path):
     db = _db(tmp_path)
     app = _FakeApp(db)
