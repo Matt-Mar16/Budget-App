@@ -75,6 +75,18 @@ CATEGORY_CHART_COLORS = ["#5B8DEF", "#4CC9A0", "#F2994A", "#E4574C", "#9B6BDE",
                           "#4AB8C4", "#E0A93E", "#6E7FE0", "#D46FB0", "#67B356"]
 
 
+def resolve_category_colors(categories):
+    """Every category gets a color: its own custom pick (categories.color)
+    if set, else one cycled from CATEGORY_CHART_COLORS by list position --
+    so a color swatch/highlight is never blank/grey even before anything's
+    been customized. Cycled globally across the list (not restarted per
+    kind), matching the order list_categories() already returns."""
+    return {
+        cat["id"]: cat["color"] or CATEGORY_CHART_COLORS[i % len(CATEGORY_CHART_COLORS)]
+        for i, cat in enumerate(categories)
+    }
+
+
 def fmt_money(x, currency="GBP"):
     try:
         symbol = CURRENCY_SYMBOLS.get((currency or "").upper())
@@ -299,9 +311,17 @@ def make_scrollable_toplevel(parent, title, geometry):
     return win, content
 
 
-def metric_cell(parent, title):
+def metric_cell(parent, title, accent_color=None):
+    """A titled stat card. accent_color, if given, colors just the title
+    label -- purely decorative variety between cards, kept visually
+    separate from the value label's own health-based coloring (Good/Warn/
+    Bad.TLabel), which callers apply dynamically based on what the number
+    actually means."""
     cell = Card(parent, title="")
-    ttk.Label(cell, text=title, style="CardDim.TLabel").pack(anchor="w")
+    title_label = ttk.Label(cell, text=title, style="CardDim.TLabel")
+    if accent_color:
+        title_label.configure(foreground=accent_color)
+    title_label.pack(anchor="w")
     val = ttk.Label(cell, text="—", style="H2.TLabel", font=theme.Fonts.h1)
     val.pack(anchor="w", pady=(2, 0))
     return cell, val
@@ -824,10 +844,16 @@ class DashboardTab(ScrollableTab):
         grid = ttk.Frame(self)
         grid.pack(fill="x", pady=(0, 10))
         self.metric_labels = {}
-        metrics = ["Savings Rate", "Emergency Fund", "Debt-to-Income",
-                   "Housing Ratio", "Income (mo.)", "Expenses (mo.)"]
-        for i, m in enumerate(metrics):
-            cell, val = metric_cell(grid, m)
+        # Decorative per-card accent colors -- Income/Expenses keep their
+        # meaningful good/bad (green/red) coloring instead, since that
+        # already means something (see refresh()).
+        metrics = [
+            ("Savings Rate", "#9B6BDE"), ("Emergency Fund", "#4AB8C4"),
+            ("Debt-to-Income", "#E0A93E"), ("Housing Ratio", "#D46FB0"),
+            ("Income (mo.)", c["good"]), ("Expenses (mo.)", c["bad"]),
+        ]
+        for i, (m, accent) in enumerate(metrics):
+            cell, val = metric_cell(grid, m, accent_color=accent)
             cell.grid(row=i // 3, column=i % 3, sticky="nsew", padx=4, pady=4)
             grid.columnconfigure(i % 3, weight=1)
             self.metric_labels[m] = val
@@ -871,6 +897,11 @@ class DashboardTab(ScrollableTab):
         self.flags_text.tag_configure("warn", foreground=c["warn"])
         self.flags_text.tag_configure("good", foreground=c["good"])
         self.flags_text.tag_configure("info", foreground=c["accent"])
+        # More specific nudge flavors get their own color instead of all
+        # non-severity items sharing the one generic "info" blue.
+        self.flags_text.tag_configure("bill", foreground="#6E7FE0")
+        self.flags_text.tag_configure("reward", foreground="#E0A93E")
+        self.flags_text.tag_configure("idle", foreground="#4AB8C4")
 
     def refresh(self):
         db = self.app.db
@@ -889,19 +920,43 @@ class DashboardTab(ScrollableTab):
         dti = debt_to_income(db, y, m)
         hr = housing_ratio(db, y, m)
 
-        self.metric_labels["Savings Rate"].config(text=fmt_pct(sr))
-        self.metric_labels["Emergency Fund"].config(text=(f"{ef:,.1f} mo" if ef is not None else "n/a"))
-        self.metric_labels["Debt-to-Income"].config(text=(fmt_pct(dti) if dti is not None else "n/a"))
-        self.metric_labels["Housing Ratio"].config(text=(fmt_pct(hr) if hr is not None else "n/a"))
+        # Value text is colored by health (distinct from the title's purely
+        # decorative accent color set in _build()) -- green/orange/red
+        # against the same thresholds the Flags & Nudges panel already
+        # uses, or the faint/dim color for an "n/a" reading.
+        def health_color(value, good_if, warn_if):
+            if value is None:
+                return c["text_faint"]
+            if good_if(value):
+                return c["good"]
+            if warn_if(value):
+                return c["warn"]
+            return c["bad"]
+
+        self.metric_labels["Savings Rate"].config(
+            text=fmt_pct(sr), foreground=health_color(sr, lambda v: v >= 0.15, lambda v: v >= 0.10))
+        self.metric_labels["Emergency Fund"].config(
+            text=(f"{ef:,.1f} mo" if ef is not None else "n/a"),
+            foreground=health_color(ef, lambda v: v >= 3, lambda v: v >= 1))
+        self.metric_labels["Debt-to-Income"].config(
+            text=(fmt_pct(dti) if dti is not None else "n/a"),
+            foreground=health_color(dti, lambda v: v <= 0.36, lambda v: v <= 0.43))
+        self.metric_labels["Housing Ratio"].config(
+            text=(fmt_pct(hr) if hr is not None else "n/a"),
+            foreground=health_color(hr, lambda v: v <= 0.30, lambda v: v <= 0.40))
         self.metric_labels["Income (mo.)"].config(text=fmt_money(income, cur))
         self.metric_labels["Expenses (mo.)"].config(text=fmt_money(expenses, cur))
 
         # donut: need/want/saving split
         kind_spend = spend_by_kind(db, y, m)
+        # Purely decorative segment colors, deliberately distinct from
+        # c["accent"]/c["warn"]/c["good"] -- those carry pass/fail meaning
+        # elsewhere (Flags & Nudges tags, metric-card health coloring) and
+        # reusing them here would make this donut look like a status readout.
         segments = [
-            ("Needs", kind_spend["need"], c["accent"]),
-            ("Wants", kind_spend["want"], c["warn"]),
-            ("Saving", kind_spend["saving"], c["good"]),
+            ("Needs", kind_spend["need"], CATEGORY_CHART_COLORS[4]),
+            ("Wants", kind_spend["want"], CATEGORY_CHART_COLORS[5]),
+            ("Saving", kind_spend["saving"], CATEGORY_CHART_COLORS[8]),
         ]
         charts.draw_donut_chart(self.donut_canvas, segments, c,
                                  center_label=fmt_money(expenses, cur), center_sub="total spend")
@@ -957,7 +1012,7 @@ class DashboardTab(ScrollableTab):
 
         idle = idle_cash_nudge(db, y, m)
         if idle:
-            lines.append(("info", f"💡 You've got about {fmt_money(idle, cur)} sitting idle above "
+            lines.append(("idle", f"💡 You've got about {fmt_money(idle, cur)} sitting idle above "
                                    f"your safety buffer — could be working harder for you."))
 
         for card in credit_utilization(db):
@@ -975,17 +1030,17 @@ class DashboardTab(ScrollableTab):
 
         unredeemed = db.get_unredeemed_cashback()
         if unredeemed >= 5:
-            lines.append(("info", f"💳 You've got {fmt_money(unredeemed, cur)} in unredeemed "
+            lines.append(("reward", f"💳 You've got {fmt_money(unredeemed, cur)} in unredeemed "
                                    f"cashback sitting there — grab it on the Rewards tab whenever."))
 
         jar = db.get_or_create_roundup_jar()
         if jar["balance"] >= 10:
-            lines.append(("info", f"🐷 Your Round-Up Jar has {fmt_money(jar['balance'], cur)} "
+            lines.append(("reward", f"🐷 Your Round-Up Jar has {fmt_money(jar['balance'], cur)} "
                                    f"saved up — sweep it into savings whenever you're ready."))
 
         bills = upcoming_bills(db, within_days=14, today=self.app.today)
         for b in bills[:4]:
-            lines.append(("info", f"📅 {b['name']} ({fmt_money(b['amount'], cur)}) is due "
+            lines.append(("bill", f"📅 {b['name']} ({fmt_money(b['amount'], cur)}) is due "
                                    f"{b['next_date']} — coming up."))
 
         for f in lifestyle_inflation_flags(db, y, m)[:4]:
@@ -1466,7 +1521,13 @@ class TransactionsTab(ScrollableTab):
             self.tree.delete(row)
         db = self.app.db
         query = self.search_var.get().strip().lower()
-        cat_color_by_id = {c["id"]: c["color"] for c in cats if c["color"]}
+        resolved_colors = resolve_category_colors(cats)
+        # A subtle blend toward the card background, not the category's
+        # full-saturation color -- every row gets a default color now
+        # (resolve_category_colors), and a whole list of fully-saturated
+        # row backgrounds would be visually overwhelming at 50+ rows.
+        cat_color_by_id = {cid: charts.lerp_color(self.app.c["card"], color, 0.18)
+                            for cid, color in resolved_colors.items()}
         for t in all_txs:
             # Transfers between the user's own accounts aren't income or
             # spending -- they clutter this list without adding information,
@@ -1847,8 +1908,10 @@ class BudgetsTab(ScrollableTab):
 
         run_rate_by_cat = {r["category"]["id"]: r for r in budget_run_rate(db, y, m, today=self.app.today)}
 
+        all_cats = db.list_categories()
+        resolved_colors = resolve_category_colors(all_cats)
         groups = {"need": [], "want": [], "saving": [], "income": []}
-        for cat in db.list_categories():
+        for cat in all_cats:
             groups[cat["kind"]].append(cat)
         income_totals = {r["category_id"]: r["total"] for r in income_by_category(db, y, m)}
 
@@ -1870,7 +1933,7 @@ class BudgetsTab(ScrollableTab):
                 handle = ttk.Label(header, text="⠿", style="CardDim.TLabel")
                 handle.pack(side="left", padx=(0, 6))
                 drag_rows.append((handle, row, cat["id"]))
-                swatch = tk.Label(header, width=2, bg=cat["color"] or c["grid"], cursor="hand2")
+                swatch = tk.Label(header, width=2, bg=resolved_colors[cat["id"]], cursor="hand2")
                 swatch.pack(side="left", padx=(0, 6))
                 swatch.bind("<Button-1>", lambda e, cid=cat["id"], cc=cat["color"]:
                             self._pick_category_color(cid, cc))
@@ -1933,7 +1996,7 @@ class BudgetsTab(ScrollableTab):
             handle = ttk.Label(row, text="⠿", style="CardDim.TLabel")
             handle.pack(side="left", padx=(0, 6))
             income_drag_rows.append((handle, row, cat["id"]))
-            swatch = tk.Label(row, width=2, bg=cat["color"] or c["grid"], cursor="hand2")
+            swatch = tk.Label(row, width=2, bg=resolved_colors[cat["id"]], cursor="hand2")
             swatch.pack(side="left", padx=(0, 6))
             swatch.bind("<Button-1>", lambda e, cid=cat["id"], cc=cat["color"]:
                         self._pick_category_color(cid, cc))
@@ -3116,14 +3179,22 @@ class AccountsTab(ScrollableTab):
         if ungrouped:
             groups.append(("Other", ungrouped))
         self.tree.tag_configure("group", font=theme.Fonts.body_bold)
+        acct_color_index = 0
         for group_name, accs in groups:
             group_iid = f"group:{group_name}"
             self.tree.insert("", "end", iid=group_iid, text=group_name, open=True, tags=("group",))
             for a in accs:
                 type_label = ACCOUNT_TYPE_BY_SUBTYPE_KIND.get((a["subtype"], a["kind"]), "Other")
+                # Every account gets a default color too (cycled the same
+                # way categories do), so the list has visual identity per
+                # account without requiring any manual setup.
+                row_tag = f"acctcolor_{a['id']}"
+                self.tree.tag_configure(
+                    row_tag, foreground=CATEGORY_CHART_COLORS[acct_color_index % len(CATEGORY_CHART_COLORS)])
+                acct_color_index += 1
                 self.tree.insert(group_iid, "end", iid=str(a["id"]), values=(
                     a["name"], type_label, f"{a['balance']:,.2f}", a["currency"],
-                    "yes" if a["liquid"] else "no"))
+                    "yes" if a["liquid"] else "no"), tags=(row_tag,))
 
         for row in self.transfers_tree.get_children():
             self.transfers_tree.delete(row)
@@ -3508,18 +3579,17 @@ class ForecastTab(ScrollableTab):
             if t["amount"] < 0 and t["category_id"] is not None:
                 spend_by_cat[t["category_id"]] = spend_by_cat.get(t["category_id"], 0.0) - db.to_reporting(
                     t["amount"], t["currency"])
-        spend_categories = [cat for cat in db.list_categories() if cat["kind"] in ("need", "want", "saving")]
-
-        def cat_color(cat, i):
-            return cat["color"] or CATEGORY_CHART_COLORS[i % len(CATEGORY_CHART_COLORS)]
+        all_cats = db.list_categories()
+        resolved_colors = resolve_category_colors(all_cats)
+        spend_categories = [cat for cat in all_cats if cat["kind"] in ("need", "want", "saving")]
 
         actual_segments = [
-            (cat["name"], spend_by_cat.get(cat["id"], 0.0), cat_color(cat, i))
-            for i, cat in enumerate(spend_categories) if spend_by_cat.get(cat["id"], 0.0) > 0
+            (cat["name"], spend_by_cat.get(cat["id"], 0.0), resolved_colors[cat["id"]])
+            for cat in spend_categories if spend_by_cat.get(cat["id"], 0.0) > 0
         ]
         budgeted_segments = [
-            (cat["name"], cat["monthly_budget"] or 0.0, cat_color(cat, i))
-            for i, cat in enumerate(spend_categories) if (cat["monthly_budget"] or 0.0) > 0
+            (cat["name"], cat["monthly_budget"] or 0.0, resolved_colors[cat["id"]])
+            for cat in spend_categories if (cat["monthly_budget"] or 0.0) > 0
         ]
         total_actual = sum(v for _, v, _ in actual_segments)
         total_budgeted = sum(v for _, v, _ in budgeted_segments)
