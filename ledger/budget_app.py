@@ -310,7 +310,7 @@ class ProfileLauncher(tk.Tk):
         entry = ttk.Entry(new_row, textvariable=self.new_name, width=24)
         entry.pack(side="left", padx=8)
         entry.bind("<Return>", lambda e: self._create())
-        ttk.Button(new_row, text="+ Create Profile", style="Accent.TButton",
+        ttk.Button(new_row, text="+ Create Profile", style="Good.TButton",
                    command=self._create).pack(side="left")
         ttk.Button(new_row, text="Import Existing Profile…",
                    command=self._import_dialog).pack(side="left", padx=8)
@@ -858,21 +858,27 @@ class DashboardTab(ScrollableTab):
         target = db.get_setting_float("monthly_savings_target", 0.0)
         lines = []
         if sr < 0.10:
-            lines.append(("warn", f"⚠ Savings rate is {fmt_pct(sr)} — below the 10% baseline."))
+            lines.append(("warn", f"⚠ You saved {fmt_pct(sr)} of your income this month — "
+                                   f"below the 10% baseline."))
         elif sr < 0.15:
-            lines.append(("info", f"ℹ Savings rate is {fmt_pct(sr)} — acceptable, aim for 15–20%+."))
+            lines.append(("info", f"ℹ You saved {fmt_pct(sr)} this month — solid, but aim for "
+                                   f"15–20%+ if you can."))
         else:
-            lines.append(("good", f"✓ Savings rate is {fmt_pct(sr)} — at or above the recommended range."))
+            lines.append(("good", f"✓ You saved {fmt_pct(sr)} this month — right in the healthy "
+                                   f"range. Nice."))
 
         if target > 0 and savings < target:
-            lines.append(("warn", f"⚠ Monthly savings target of {fmt_money(target, cur)} not yet met "
-                                   f"({fmt_money(savings, cur)} recorded in saving categories)."))
+            lines.append(("warn", f"⚠ You're {fmt_money(target - savings, cur)} short of your "
+                                   f"{fmt_money(target, cur)} savings target this month "
+                                   f"({fmt_money(savings, cur)} saved so far)."))
 
         if ef is not None:
             if ef < 3:
-                lines.append(("warn", f"⚠ Emergency fund covers {ef:,.1f} months — build toward 3–6 minimum."))
+                lines.append(("warn", f"⚠ Your emergency fund covers {ef:,.1f} months of expenses "
+                                       f"— aim for 3–6."))
             else:
-                lines.append(("good", f"✓ Emergency fund covers {ef:,.1f} months of essentials."))
+                lines.append(("good", f"✓ Your emergency fund covers {ef:,.1f} months of "
+                                       f"essentials — you're covered."))
 
         if dti is not None and dti > 0.36:
             lines.append(("warn", f"⚠ Debt-to-income is {fmt_pct(dti)} — above the 36% healthy threshold."))
@@ -880,53 +886,60 @@ class DashboardTab(ScrollableTab):
         threshold_pct = db.get_setting_float("budget_alert_threshold_pct", 80.0)
         for row in categories_over_threshold(db, y, m, threshold_pct=threshold_pct):
             if row["over"]:
-                lines.append(("warn", f"⚠ '{row['category']['name']}' is over budget: "
-                                       f"{fmt_money(row['spent'], cur)} / {fmt_money(row['budget'], cur)}."))
+                lines.append(("warn", f"⚠ You've gone over on {row['category']['name']} — "
+                                       f"{fmt_money(row['spent'], cur)} spent against a "
+                                       f"{fmt_money(row['budget'], cur)} budget."))
             else:
-                lines.append(("info", f"ℹ '{row['category']['name']}' has reached {fmt_pct(row['pct'])} "
-                                       f"of its {fmt_money(row['budget'], cur)} budget."))
+                lines.append(("info", f"ℹ {row['category']['name']} is at {fmt_pct(row['pct'])} of "
+                                       f"its {fmt_money(row['budget'], cur)} budget — worth a glance "
+                                       f"before month-end."))
 
         idle = idle_cash_nudge(db, y, m)
         if idle:
-            lines.append(("info", f"💡 ~{fmt_money(idle, cur)} sits idle above your buffer — "
-                                   f"consider investing it or extra debt payoff."))
+            lines.append(("info", f"💡 You've got about {fmt_money(idle, cur)} sitting idle above "
+                                   f"your safety buffer — could be working harder for you."))
 
         for card in credit_utilization(db):
             util = card["utilization"]
             if util >= 0.70:
-                lines.append(("warn", f"⚠ '{card['account']['name']}' is at {util*100:,.0f}% utilization "
-                                       f"({fmt_money(card['balance'], cur)} / {fmt_money(card['limit'], cur)}) — "
-                                       f"high utilization can hurt your credit score; aim to keep it under 30%."))
+                lines.append(("warn", f"⚠ {card['account']['name']} is at {util*100:,.0f}% "
+                                       f"utilization ({fmt_money(card['balance'], cur)} of "
+                                       f"{fmt_money(card['limit'], cur)}) — that can ding your "
+                                       f"credit score; try to get it under 30%."))
 
         for due in upcoming_card_payments(db, within_days=7, today=self.app.today):
-            lines.append(("warn", f"💳 '{due['account']['name']}' payment of {fmt_money(due['balance'], cur)} "
-                                   f"is due {due['due_date']}."))
+            lines.append(("warn", f"💳 {due['account']['name']} payment of "
+                                   f"{fmt_money(due['balance'], cur)} is due {due['due_date']} — "
+                                   f"don't forget."))
 
         unredeemed = db.get_unredeemed_cashback()
         if unredeemed >= 5:
-            lines.append(("info", f"💳 You have {fmt_money(unredeemed, cur)} unredeemed cashback — "
-                                   f"redeem it on the Rewards tab whenever you like."))
+            lines.append(("info", f"💳 You've got {fmt_money(unredeemed, cur)} in unredeemed "
+                                   f"cashback sitting there — grab it on the Rewards tab whenever."))
 
         jar = db.get_or_create_roundup_jar()
         if jar["balance"] >= 10:
-            lines.append(("info", f"🐷 Your Round-Up Jar has {fmt_money(jar['balance'], cur)} in it — "
-                                   f"sweep it into savings or investing on the Rewards tab."))
+            lines.append(("info", f"🐷 Your Round-Up Jar has {fmt_money(jar['balance'], cur)} "
+                                   f"saved up — sweep it into savings whenever you're ready."))
 
         bills = upcoming_bills(db, within_days=14, today=self.app.today)
         for b in bills[:4]:
-            lines.append(("info", f"📅 '{b['name']}' ({fmt_money(b['amount'], cur)}) is due {b['next_date']}."))
+            lines.append(("info", f"📅 {b['name']} ({fmt_money(b['amount'], cur)}) is due "
+                                   f"{b['next_date']} — coming up."))
 
         for f in lifestyle_inflation_flags(db, y, m)[:4]:
-            lines.append(("warn", f"⚠ Lifestyle inflation: '{f['category']}' grew {fmt_pct(f['growth'])} "
-                                   f"vs. {fmt_pct(f['income_growth'])} income growth."))
+            lines.append(("warn", f"⚠ Your spending on {f['category']} jumped {fmt_pct(f['growth'])} "
+                                   f"this month, while income only grew {fmt_pct(f['income_growth'])} "
+                                   f"— creeping lifestyle inflation?"))
 
         for a in category_anomalies(db)[:4]:
             t = a["transaction"]
-            lines.append(("info", f"🔍 Anomaly: {t['payee'] or t['category_name']} on {t['date']} was "
-                                   f"{fmt_money(a['amount'], cur)} — above its usual average."))
+            lines.append(("info", f"🔍 {t['payee'] or t['category_name']} on {t['date']} cost "
+                                   f"{fmt_money(a['amount'], cur)} — well above what you usually "
+                                   f"spend there."))
 
         if not lines:
-            lines.append(("good", "Nothing flagged this month. Looking healthy."))
+            lines.append(("good", "Nothing flagged this month — looking healthy."))
 
         self.flags_text.config(state="normal")
         self.flags_text.delete("1.0", "end")
@@ -1131,7 +1144,7 @@ class TransactionsTab(ScrollableTab):
         self.account_combo = ttk.Combobox(form, textvariable=self.account_var, width=16, state="readonly")
         self.account_combo.grid(row=1, column=6, padx=4)
 
-        ttk.Button(form, text="Add", style="Accent.TButton", command=self.add_transaction).grid(
+        ttk.Button(form, text="Add", style="Good.TButton", command=self.add_transaction).grid(
             row=1, column=7, padx=8)
 
         ttk.Label(form, text="Tags (comma-separated)", style="CardDim.TLabel").grid(
@@ -1734,7 +1747,7 @@ class BudgetsTab(ScrollableTab):
         ttk.Combobox(add_frame, textvariable=self.new_kind, values=["need", "want", "saving", "income"],
                      width=10, state="readonly").grid(row=0, column=1, padx=4)
         ttk.Entry(add_frame, textvariable=self.new_budget, width=10).grid(row=0, column=2, padx=4)
-        ttk.Button(add_frame, text="Add Category", style="Accent.TButton",
+        ttk.Button(add_frame, text="Add Category", style="Good.TButton",
                    command=self.add_category).grid(row=0, column=3, padx=8)
 
         self.canvas_frame = ttk.Frame(self)
@@ -1931,7 +1944,7 @@ class RecurringTab(ScrollableTab):
         self.account_var = tk.StringVar()
         self.account_combo = ttk.Combobox(form, textvariable=self.account_var, width=14, state="readonly")
         self.account_combo.grid(row=1, column=7, padx=3)
-        ttk.Button(form, text="Add", style="Accent.TButton", command=self.add_recurring).grid(
+        ttk.Button(form, text="Add", style="Good.TButton", command=self.add_recurring).grid(
             row=1, column=8, padx=8)
 
         self.custom_interval_frame = ttk.Frame(form, style="Card.TFrame")
@@ -2143,7 +2156,7 @@ class DebtPlannerTab(ScrollableTab):
         ]):
             ttk.Label(form, text=label, style="CardDim.TLabel").grid(row=0, column=i, sticky="w")
             ttk.Entry(form, textvariable=var, width=14).grid(row=1, column=i, padx=4)
-        ttk.Button(form, text="Add Debt", style="Accent.TButton", command=self.add_debt).grid(
+        ttk.Button(form, text="Add Debt", style="Good.TButton", command=self.add_debt).grid(
             row=1, column=5, padx=8)
 
         list_card = Card(self, title="Debts")
@@ -2340,7 +2353,7 @@ class AccountsTab(ScrollableTab):
         self.currency_entry = ttk.Entry(form, textvariable=self.acc_currency, width=6)
         self.currency_entry.grid(row=1, column=3, padx=4)
         ttk.Checkbutton(form, text="Liquid", variable=self.acc_liquid).grid(row=1, column=4, padx=6)
-        ttk.Button(form, text="Add Account", style="Accent.TButton", command=self.add_account).grid(
+        ttk.Button(form, text="Add Account", style="Good.TButton", command=self.add_account).grid(
             row=1, column=5, padx=8)
 
         self.extra_frame = ttk.Frame(form, style="Card.TFrame")
@@ -2991,7 +3004,7 @@ class NetWorthTab(ScrollableTab):
         self.nw_label.pack(anchor="w")
         self.fi_label = ttk.Label(summary, style="CardDim.TLabel", wraplength=420, justify="left")
         self.fi_label.pack(anchor="w", pady=(4, 8))
-        ttk.Button(summary, text="Record Net Worth Snapshot (today)", style="Accent.TButton",
+        ttk.Button(summary, text="Record Net Worth Snapshot (today)", style="Good.TButton",
                    command=self.record_snapshot).pack(anchor="w")
 
         ring_card = Card(summary_row, title="FI Progress")
@@ -3153,6 +3166,11 @@ class ForecastTab(ScrollableTab):
         self.budgeted_donut_canvas = tk.Canvas(budgeted_col, height=200, highlightthickness=0, bg=c["card"])
         self.budgeted_donut_canvas.pack(fill="both", expand=True)
 
+        ttk.Label(donuts_card, text="Plan vs. Actual (Need/Want/Saving split)",
+                  style="CardDim.TLabel").pack(anchor="w", pady=(10, 0))
+        self.plan_actual_frame = ttk.Frame(donuts_card, style="Card.TFrame")
+        self.plan_actual_frame.pack(fill="x", pady=(4, 0))
+
         whatif_card = Card(self, title="What If…")
         whatif_card.pack(fill="x", pady=(0, 10))
         ttk.Label(whatif_card, text="See the effect of spending more or less in a category type this "
@@ -3186,9 +3204,29 @@ class ForecastTab(ScrollableTab):
         ttk.Entry(goal_row, textvariable=self.goal_date_var, width=12).pack(side="left", padx=(4, 12))
         ttk.Button(goal_row, text="Save Goal", style="Accent.TButton",
                    command=self._save_goal).pack(side="left")
+        self.goal_progress_label = ttk.Label(goal_card, style="Card.TLabel", font=theme.Fonts.body_bold)
+        self.goal_progress_label.pack(anchor="w", pady=(10, 2))
+        self.goal_progress_canvas = tk.Canvas(goal_card, height=14, highlightthickness=0, bg=c["card"])
+        self.goal_progress_canvas.pack(fill="x", pady=(0, 6))
         self.goal_result_label = ttk.Label(goal_card, style="CardDim.TLabel", wraplength=760,
                                             justify="left")
-        self.goal_result_label.pack(anchor="w", pady=(8, 0))
+        self.goal_result_label.pack(anchor="w", pady=(2, 0))
+
+    def _draw_goal_progress_bar(self, pct):
+        canvas = self.goal_progress_canvas
+        w = canvas.winfo_width()
+        h = canvas.winfo_height() or 14
+        if w < 10:
+            canvas.after(50, lambda: self._draw_goal_progress_bar(pct) if canvas.winfo_exists() else None)
+            return
+        c = self.app.c
+        canvas.delete("all")
+        charts.rounded_rect(canvas, 0, 0, w, h, r=h / 2, fill=c["grid"], outline="")
+        pct = max(0.0, min(pct, 1.0))
+        if pct > 0:
+            fill_w = max(h, w * pct)
+            color = c["good"] if pct >= 1.0 else c["accent"]
+            charts.rounded_rect(canvas, 0, 0, fill_w, h, r=h / 2, fill=color, outline="")
 
     def _calculate_whatif(self):
         db = self.app.db
@@ -3280,6 +3318,30 @@ class ForecastTab(ScrollableTab):
         charts.draw_donut_chart(self.budgeted_donut_canvas, budgeted_segments, c,
                                  center_label=fmt_money(total_budgeted, cur), center_sub="budgeted")
 
+        for w in self.plan_actual_frame.winfo_children():
+            w.destroy()
+        kind_spend = spend_by_kind(db, y, m)
+        total_spend = sum(kind_spend.values())
+        for i, (kind, plan_pct, kind_label) in enumerate(
+                (("need", 0.50, "Needs"), ("want", 0.30, "Wants"), ("saving", 0.20, "Savings"))):
+            actual_pct = (kind_spend[kind] / total_spend) if total_spend > 0 else 0.0
+            # Under plan is favorable for need/want (spending less than
+            # budgeted), but unfavorable for saving (saving less than the
+            # target share) -- the two kinds read the same comparison
+            # in opposite directions.
+            over_plan = actual_pct > plan_pct + 0.01
+            under_plan = actual_pct < plan_pct - 0.01
+            if kind == "saving":
+                style = "Bad.TLabel" if under_plan else "Good.TLabel"
+            else:
+                style = "Bad.TLabel" if over_plan else "Good.TLabel"
+            row = ttk.Frame(self.plan_actual_frame, style="Card.TFrame")
+            row.grid(row=0, column=i, sticky="w", padx=(0 if i == 0 else 18, 0))
+            ttk.Label(row, text=kind_label, style="Card.TLabel", font=theme.Fonts.body_bold).pack(
+                anchor="w")
+            ttk.Label(row, text=f"Plan {plan_pct*100:.0f}%", style="CardDim.TLabel").pack(anchor="w")
+            ttk.Label(row, text=f"Actual {actual_pct*100:.0f}%", style=style).pack(anchor="w")
+
         saved_amount = db.get_setting_float("goal_target_amount", 0.0)
         saved_date = db.get_setting("goal_target_date", "")
         if saved_amount:
@@ -3290,6 +3352,8 @@ class ForecastTab(ScrollableTab):
             try:
                 result = goal_projection(db, saved_amount, saved_date, today=self.app.today)
             except ValueError:
+                self.goal_progress_label.config(text="")
+                self.goal_progress_canvas.delete("all")
                 self.goal_result_label.config(text="Saved target date isn't valid — re-enter it above.")
             else:
                 if result["on_track"]:
@@ -3301,11 +3365,15 @@ class ForecastTab(ScrollableTab):
                                    if result["monthly_needed"] is not None else "target date has passed")
                     status = (f"Not on track — averaging {fmt_money(result['avg_monthly_savings'], cur)}/mo "
                               f"against {needed_text}.")
+                self.goal_progress_label.config(
+                    text=f"{fmt_money(result['current'], cur)} / {fmt_money(saved_amount, cur)}")
+                self._draw_goal_progress_bar(result["current"] / saved_amount if saved_amount else 0.0)
                 self.goal_result_label.config(
-                    text=f"Current: {fmt_money(result['current'], cur)}  ·  "
-                         f"Remaining: {fmt_money(result['remaining'], cur)}  ·  "
+                    text=f"Remaining: {fmt_money(result['remaining'], cur)}  ·  "
                          f"{result['months_left']} month(s) left. {status}")
         else:
+            self.goal_progress_label.config(text="")
+            self.goal_progress_canvas.delete("all")
             self.goal_result_label.config(text="Set a target amount and date to see a projection.")
 
 

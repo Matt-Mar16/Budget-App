@@ -80,6 +80,7 @@ DARK = {
     "accent_hover": "#729BF2",
     "accent_soft": "#26314F",
     "good": "#4CC9A0",
+    "good_hover": "#63D3AE",
     "warn": "#F2994A",
     "bad": "#E4574C",
     "grid": "#252A3A",
@@ -100,6 +101,7 @@ LIGHT = {
     "accent_hover": "#2E5BC2",
     "accent_soft": "#E4ECFC",
     "good": "#1F9D74",
+    "good_hover": "#1A8563",
     "warn": "#C77420",
     "bad": "#D1453B",
     "grid": "#E7E9EE",
@@ -158,6 +160,15 @@ def apply_theme(root, style: ttk.Style, mode="dark"):
                      font=Fonts.body_bold, padding=(14, 8), borderwidth=0)
     style.map("Accent.TButton",
               background=[("active", c["accent_hover"]), ("pressed", c["accent_hover"])])
+
+    # Reserved for additive/creation actions (Add X, + Create X, Record a new
+    # snapshot) so a screen's one primary action (Save/Transfer/Reconcile/
+    # etc., still Accent.TButton) doesn't visually blend in with "make a new
+    # thing" buttons -- everything used to be the same blue.
+    style.configure("Good.TButton", background=c["good"], foreground="#FFFFFF",
+                     font=Fonts.body_bold, padding=(14, 8), borderwidth=0)
+    style.map("Good.TButton",
+              background=[("active", c["good_hover"]), ("pressed", c["good_hover"])])
 
     style.configure("Nav.TButton", background=c["sidebar"], foreground=c["text_dim"],
                      font=Fonts.body, padding=(14, 10), borderwidth=0, anchor="w")
