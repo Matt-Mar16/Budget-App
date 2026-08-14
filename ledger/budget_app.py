@@ -39,7 +39,7 @@ Worth split, the Forecast tab, and more):
 
 import sys
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog
+from tkinter import ttk, messagebox, filedialog, simpledialog, colorchooser
 import datetime
 import os
 
@@ -117,55 +117,73 @@ class Card(ttk.LabelFrame):
 
 def enable_drag_reorder(handles_and_rows, on_reorder):
     """Wires drag-to-reorder onto a vertically pack()'d list of rows that
-    share one parent -- dragging a row's handle live-swaps it past
-    whichever sibling the pointer crosses (comparing against each
-    sibling's vertical midpoint) by repacking in the new order, then calls
-    on_reorder(ids_in_final_order) once when the drag ends. Reusable by
-    any tab that wants drag reordering instead of Up/Down buttons; takes
-    (handle_widget, row_widget, item_id) triples so a small grip icon can
-    be the drag target while the rest of the row's own widgets (entries,
-    buttons) keep working normally.
+    share one parent. Rows stay put while dragging -- a thin colored
+    insertion line (Notion-style) tracks the gap the pointer is currently
+    over, and the actual reorder (a single repack) happens only on
+    release, when on_reorder(ids_in_final_order) is called once. Reusable
+    by any tab that wants drag reordering instead of Up/Down buttons;
+    takes (handle_widget, row_widget, item_id) triples so a small grip
+    icon can be the drag target while the rest of the row's own widgets
+    (entries, buttons) keep working normally.
     """
-    order = [row for _, row, _ in handles_and_rows]
+    rows = [row for _, row, _ in handles_and_rows]
     item_id_by_row = {row: item_id for _, row, item_id in handles_and_rows}
-    dragging = {"row": None}
+    if not rows:
+        return
+    parent = rows[0].master
+    indicator = tk.Frame(parent, height=3, bg=theme.Palette.c["accent"])
+    dragging = {"row": None, "target_before": None}
 
-    def repack():
-        for row in order:
-            row.pack_forget()
-            row.pack(fill="x", pady=5)
+    def gap_before(row, pointer_y):
+        """Which sibling (excluding `row` itself) the pointer is currently
+        above the midpoint of -- insert before that one. None means
+        "insert at the end" (pointer is below every other row)."""
+        for other in rows:
+            if other is row:
+                continue
+            mid = other.winfo_rooty() + other.winfo_height() // 2
+            if pointer_y < mid:
+                return other
+        return None
 
-    def on_press(row):
+    def show_indicator(target_before):
+        indicator.pack_forget()
+        if target_before is not None:
+            indicator.pack(fill="x", pady=2, before=target_before)
+        else:
+            indicator.pack(fill="x", pady=2)
+
+    def on_press(row, event):
         dragging["row"] = row
+        target = gap_before(row, event.y_root)
+        dragging["target_before"] = target
+        show_indicator(target)
 
     def on_motion(row, event):
         if dragging["row"] is not row:
             return
-        pointer_y = event.y_root
-        idx_row = order.index(row)
-        for other in order:
-            if other is row:
-                continue
-            idx_other = order.index(other)
-            mid = other.winfo_rooty() + other.winfo_height() // 2
-            if idx_row < idx_other and pointer_y > mid:
-                order[idx_row], order[idx_other] = order[idx_other], order[idx_row]
-                repack()
-                break
-            if idx_row > idx_other and pointer_y < mid:
-                order[idx_row], order[idx_other] = order[idx_other], order[idx_row]
-                repack()
-                break
+        target = gap_before(row, event.y_root)
+        if target is not dragging["target_before"]:
+            dragging["target_before"] = target
+            show_indicator(target)
 
     def on_release(row):
         if dragging["row"] is not row:
             return
         dragging["row"] = None
-        on_reorder([item_id_by_row[r] for r in order])
+        indicator.pack_forget()
+        remaining = [r for r in rows if r is not row]
+        target = dragging["target_before"]
+        insert_at = remaining.index(target) if target is not None else len(remaining)
+        new_order = remaining[:insert_at] + [row] + remaining[insert_at:]
+        for r in new_order:
+            r.pack_forget()
+            r.pack(fill="x", pady=5)
+        on_reorder([item_id_by_row[r] for r in new_order])
 
     for handle, row, _ in handles_and_rows:
         handle.configure(cursor="fleur")
-        handle.bind("<ButtonPress-1>", lambda e, r=row: on_press(r))
+        handle.bind("<ButtonPress-1>", lambda e, r=row: on_press(r, e))
         handle.bind("<B1-Motion>", lambda e, r=row: on_motion(r, e))
         handle.bind("<ButtonRelease-1>", lambda e, r=row: on_release(r))
 
@@ -236,6 +254,49 @@ class ScrollableTab(ttk.Frame):
 
     def tkraise(self, *args, **kw):
         self.wrapper.tkraise(*args, **kw)
+
+
+def make_scrollable_toplevel(parent, title, geometry):
+    """Builds a tk.Toplevel whose content scrolls automatically if it's
+    taller than the window, using the same canvas-embedding trick as
+    ScrollableTab -- so a popup that isn't manually resized never clips
+    content off the bottom instead of just growing past the screen.
+    Returns (win, content): win for title()/geometry()/protocol()/etc.,
+    content as the parent frame for the dialog's own widgets (the role
+    'self' plays inside a ScrollableTab subclass)."""
+    win = tk.Toplevel(parent)
+    win.title(title)
+    c = theme.Palette.c
+    win.configure(bg=c["bg"])
+    win.geometry(geometry)
+
+    canvas = tk.Canvas(win, highlightthickness=0, bg=c["bg"])
+    vsb = ttk.Scrollbar(win, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=vsb.set)
+    canvas.pack(side="left", fill="both", expand=True)
+    vsb.pack(side="right", fill="y")
+
+    content = ttk.Frame(canvas)
+    window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+
+    def _on_content_configure(_e):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def _on_canvas_configure(e):
+        canvas.itemconfig(window_id, width=e.width)
+
+    content.bind("<Configure>", _on_content_configure)
+    canvas.bind("<Configure>", _on_canvas_configure)
+
+    def _on_wheel(event):
+        if isinstance(event.widget, (ttk.Treeview, tk.Text)):
+            return
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_wheel))
+    canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+
+    return win, content
 
 
 def metric_cell(parent, title):
@@ -971,10 +1032,7 @@ def open_transaction_edit_dialog(parent, app, tx_id, on_saved=None):
             "(from either account's ledger) and create a new one instead.")
         return
 
-    win = tk.Toplevel(parent)
-    win.title("Edit Transaction")
-    win.configure(bg=app.c["bg"])
-    win.geometry("380x420")
+    win, content = make_scrollable_toplevel(parent, "Edit Transaction", "440x520")
 
     cats = db.list_categories()
     cat_names = [c["name"] for c in cats]
@@ -987,7 +1045,7 @@ def open_transaction_edit_dialog(parent, app, tx_id, on_saved=None):
     acc_name_by_id = {a["id"]: a["name"] for a in accounts}
 
     if tx["reconciled"]:
-        ttk.Label(win, text="🔒 This transaction is reconciled/locked.",
+        ttk.Label(content, text="🔒 This transaction is reconciled/locked.",
                   style="Warn.TLabel", wraplength=340, justify="left").pack(
             anchor="w", padx=14, pady=(14, 0))
 
@@ -1014,12 +1072,12 @@ def open_transaction_edit_dialog(parent, app, tx_id, on_saved=None):
         ("Cashback (auto-calculated — edit to override manually)", cashback_var, None),
     ]
     for label, var, options in fields:
-        ttk.Label(win, text=label, style="TLabel").pack(anchor="w", padx=14, pady=(8, 2))
+        ttk.Label(content, text=label, style="TLabel").pack(anchor="w", padx=14, pady=(8, 2))
         if options is not None:
-            ttk.Combobox(win, textvariable=var, values=options, state="readonly").pack(
+            ttk.Combobox(content, textvariable=var, values=options, state="readonly").pack(
                 fill="x", padx=14)
         else:
-            ttk.Entry(win, textvariable=var).pack(fill="x", padx=14)
+            ttk.Entry(content, textvariable=var).pack(fill="x", padx=14)
 
     def do_save():
         try:
@@ -1094,7 +1152,7 @@ def open_transaction_edit_dialog(parent, app, tx_id, on_saved=None):
         if on_saved:
             on_saved()
 
-    btn_row = ttk.Frame(win)
+    btn_row = ttk.Frame(content)
     btn_row.pack(fill="x", padx=14, pady=16)
     ttk.Button(btn_row, text="Delete", command=do_delete).pack(side="left")
     ttk.Button(btn_row, text="Save", style="Accent.TButton", command=do_save).pack(side="right")
@@ -1280,25 +1338,22 @@ class TransactionsTab(ScrollableTab):
         if not tx:
             return
 
-        win = tk.Toplevel(self)
-        win.title("Mark as Owed")
-        win.geometry("320x220")
-        win.configure(bg=theme.Palette.c["bg"])
+        win, content = make_scrollable_toplevel(self, "Mark as Owed", "380x300")
 
-        ttk.Label(win, text=f"{tx['payee'] or '(no payee)'} — {fmt_money(tx['amount'], tx['currency'])}",
+        ttk.Label(content, text=f"{tx['payee'] or '(no payee)'} — {fmt_money(tx['amount'], tx['currency'])}",
                   style="H2.TLabel", wraplength=280, justify="left").pack(anchor="w", padx=12, pady=(12, 8))
 
-        ttk.Label(win, text="Owed by", style="TLabel").pack(anchor="w", padx=12)
+        ttk.Label(content, text="Owed by", style="TLabel").pack(anchor="w", padx=12)
         owed_by_var = tk.StringVar()
-        ttk.Entry(win, textvariable=owed_by_var).pack(fill="x", padx=12)
+        ttk.Entry(content, textvariable=owed_by_var).pack(fill="x", padx=12)
 
-        ttk.Label(win, text="Amount owed", style="TLabel").pack(anchor="w", padx=12, pady=(8, 0))
+        ttk.Label(content, text="Amount owed", style="TLabel").pack(anchor="w", padx=12, pady=(8, 0))
         amount_var = tk.StringVar(value=f"{abs(tx['amount']):.2f}")
-        ttk.Entry(win, textvariable=amount_var).pack(fill="x", padx=12)
+        ttk.Entry(content, textvariable=amount_var).pack(fill="x", padx=12)
 
-        ttk.Label(win, text="Note", style="TLabel").pack(anchor="w", padx=12, pady=(8, 0))
+        ttk.Label(content, text="Note", style="TLabel").pack(anchor="w", padx=12, pady=(8, 0))
         note_var = tk.StringVar()
-        ttk.Entry(win, textvariable=note_var).pack(fill="x", padx=12)
+        ttk.Entry(content, textvariable=note_var).pack(fill="x", padx=12)
 
         def do_save():
             owed_by = owed_by_var.get().strip()
@@ -1314,7 +1369,7 @@ class TransactionsTab(ScrollableTab):
             win.destroy()
             self.app.refresh_all()
 
-        ttk.Button(win, text="Save", style="Accent.TButton", command=do_save).pack(pady=14)
+        ttk.Button(content, text="Save", style="Accent.TButton", command=do_save).pack(pady=14)
 
     def _refresh_reimbursements(self):
         for w in self.reimb_rows_frame.winfo_children():
@@ -1411,7 +1466,14 @@ class TransactionsTab(ScrollableTab):
             self.tree.delete(row)
         db = self.app.db
         query = self.search_var.get().strip().lower()
+        cat_color_by_id = {c["id"]: c["color"] for c in cats if c["color"]}
         for t in all_txs:
+            # Transfers between the user's own accounts aren't income or
+            # spending -- they clutter this list without adding information,
+            # and are already visible via the Accounts tab's Transfers list
+            # and each account's own ledger.
+            if t["is_transfer"]:
+                continue
             tags = db.get_transaction_tags(t["id"])
             tags_label = ", ".join(tags)
             haystack = (f"{t['payee'] or ''} {t['category_name'] or ''} {t['note'] or ''} "
@@ -1455,12 +1517,18 @@ class TransactionsTab(ScrollableTab):
             reporting_amt = db.to_reporting(t["amount"], t["currency"])
             splits = db.get_transaction_splits(t["id"])
             category_label = f"⑃ split ({len(splits)})" if splits else (t["category_name"] or "(none)")
+            row_tags = ()
+            cat_color = cat_color_by_id.get(t["category_id"])
+            if cat_color:
+                row_tag = f"catcolor_{t['category_id']}"
+                self.tree.tag_configure(row_tag, background=cat_color)
+                row_tags = (row_tag,)
             self.tree.insert("", "end", iid=str(t["id"]), values=(
                 t["date"], t["payee"] or "", category_label,
                 f"{t['amount']:,.2f}", t["currency"],
                 f"{reporting_amt:,.2f}", t["account_name"] or "", t["note"] or "",
                 tags_label, "🔒" if t["reconciled"] else ""
-            ))
+            ), tags=row_tags)
 
         self._refresh_reimbursements()
 
@@ -1540,17 +1608,13 @@ class TransactionsTab(ScrollableTab):
         cats_by_name = {c["name"]: c["id"] for c in db.list_categories()}
         cats_by_id = {c["id"]: c["name"] for c in db.list_categories()}
 
-        win = tk.Toplevel(self)
-        win.title(f"Split — {tx['payee'] or '(no payee)'}")
-        win.geometry("520x380")
-        c = theme.Palette.c
-        win.configure(bg=c["bg"])
+        win, content = make_scrollable_toplevel(self, f"Split — {tx['payee'] or '(no payee)'}", "560x460")
 
-        ttk.Label(win, text=f"Total: {fmt_money(tx['amount'], tx['currency'])} — splits must add up "
+        ttk.Label(content, text=f"Total: {fmt_money(tx['amount'], tx['currency'])} — splits must add up "
                              "to exactly this (money moved doesn't change, only how it's categorized).",
                   style="H2.TLabel", wraplength=480, justify="left").pack(anchor="w", padx=10, pady=(10, 6))
 
-        rows_frame = ttk.Frame(win)
+        rows_frame = ttk.Frame(content)
         rows_frame.pack(fill="both", expand=True, padx=10)
         row_vars = []
 
@@ -1579,9 +1643,9 @@ class TransactionsTab(ScrollableTab):
         else:
             add_row(cats_by_id.get(tx["category_id"], ""), str(tx["amount"]))
 
-        ttk.Button(win, text="+ Add Row", command=lambda: add_row()).pack(anchor="w", padx=10, pady=(6, 0))
+        ttk.Button(content, text="+ Add Row", command=lambda: add_row()).pack(anchor="w", padx=10, pady=(6, 0))
 
-        btns = ttk.Frame(win)
+        btns = ttk.Frame(content)
         btns.pack(fill="x", padx=10, pady=10)
 
         def do_save():
@@ -1659,27 +1723,23 @@ class TransactionsTab(ScrollableTab):
             messagebox.showerror("Import failed", f"Couldn't read that CSV: {e}")
             return
 
-        win = tk.Toplevel(self)
-        win.title("Import preview")
-        win.geometry("760x420")
-        c = theme.Palette.c
-        win.configure(bg=c["bg"])
+        win, content = make_scrollable_toplevel(self, "Import preview", "800x520")
 
         n_ok = sum(1 for r in rows if r["parsed_ok"])
         n_bad = len(rows) - n_ok
         n_dup = sum(1 for r in rows if r["likely_duplicate"])
-        ttk.Label(win, text=f"{len(rows)} rows found — {n_ok} look valid, {n_bad} have problems, "
+        ttk.Label(content, text=f"{len(rows)} rows found — {n_ok} look valid, {n_bad} have problems, "
                              f"{n_dup} look like duplicates of transactions you already have.",
                   style="H2.TLabel").pack(anchor="w", padx=10, pady=(10, 4))
         if n_dup:
-            ttk.Label(win, wraplength=740, justify="left", style="Dim.TLabel",
+            ttk.Label(content, wraplength=740, justify="left", style="Dim.TLabel",
                       text="Likely-duplicate rows are pre-selected below and will be skipped on Commit. "
                            "Click a row to un-select it if it's a genuine second charge (e.g. two identical "
                            "coffees the same day) rather than an actual duplicate."
                       ).pack(anchor="w", padx=10, pady=(0, 4))
 
         cols = ("row", "date", "payee", "amount", "status", "dup")
-        tree_frame = ttk.Frame(win)
+        tree_frame = ttk.Frame(content)
         tree_frame.pack(fill="both", expand=True, padx=10)
         tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=14, selectmode="extended")
         for col, w, title in zip(cols, (45, 90, 190, 90, 200, 110),
@@ -1703,7 +1763,7 @@ class TransactionsTab(ScrollableTab):
         if dup_ids:
             tree.selection_set(dup_ids)
 
-        btns = ttk.Frame(win)
+        btns = ttk.Frame(content)
         btns.pack(fill="x", padx=10, pady=10)
 
         def do_commit():
@@ -1810,6 +1870,10 @@ class BudgetsTab(ScrollableTab):
                 handle = ttk.Label(header, text="⠿", style="CardDim.TLabel")
                 handle.pack(side="left", padx=(0, 6))
                 drag_rows.append((handle, row, cat["id"]))
+                swatch = tk.Label(header, width=2, bg=cat["color"] or c["grid"], cursor="hand2")
+                swatch.pack(side="left", padx=(0, 6))
+                swatch.bind("<Button-1>", lambda e, cid=cat["id"], cc=cat["color"]:
+                            self._pick_category_color(cid, cc))
                 label_text = f"{cat['name']}: {fmt_money(spent, cur)}"
                 if budget > 0:
                     label_text += f" / {fmt_money(budget, cur)}"
@@ -1869,6 +1933,10 @@ class BudgetsTab(ScrollableTab):
             handle = ttk.Label(row, text="⠿", style="CardDim.TLabel")
             handle.pack(side="left", padx=(0, 6))
             income_drag_rows.append((handle, row, cat["id"]))
+            swatch = tk.Label(row, width=2, bg=cat["color"] or c["grid"], cursor="hand2")
+            swatch.pack(side="left", padx=(0, 6))
+            swatch.bind("<Button-1>", lambda e, cid=cat["id"], cc=cat["color"]:
+                        self._pick_category_color(cid, cc))
             ttk.Label(row, text=f"{cat['name']}: {fmt_money(total, cur)}",
                       style="Card.TLabel").pack(side="left")
         if income_drag_rows:
@@ -1886,6 +1954,12 @@ class BudgetsTab(ScrollableTab):
     def _reorder_categories(self, kind, ordered_category_ids):
         self.app.db.set_category_order(kind, ordered_category_ids)
         self.app.refresh_all()
+
+    def _pick_category_color(self, cat_id, current_color):
+        _, hex_color = colorchooser.askcolor(color=current_color or None, title="Category Color")
+        if hex_color:
+            self.app.db.update_category(cat_id, color=hex_color)
+            self.app.refresh_all()
 
     def _delete_category(self, cat_id, name):
         if not messagebox.askyesno("Delete Category", f"Delete '{name}'?"):
@@ -1969,7 +2043,7 @@ class RecurringTab(ScrollableTab):
         cols = ("name", "payee", "category", "amount", "currency", "frequency", "next_date", "account", "active")
         tree_frame = ttk.Frame(list_card, style="Card.TFrame")
         tree_frame.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=8)
+        self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=14)
         headers = {"name": "Name", "payee": "Payee", "category": "Category", "amount": "Amount",
                    "currency": "Ccy", "frequency": "Frequency", "next_date": "Next Date",
                    "account": "Account", "active": "Active"}
@@ -2164,7 +2238,7 @@ class DebtPlannerTab(ScrollableTab):
         cols = ("name", "balance", "apr", "min_payment", "custom_payment")
         tree_frame = ttk.Frame(list_card, style="Card.TFrame")
         tree_frame.pack(fill="x", expand=True)
-        self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=5)
+        self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=12)
         for c, label in zip(cols, ["Name", "Balance", "APR %", "Min Payment", "Planned Payment"]):
             self.tree.heading(c, text=label)
             self.tree.column(c, width=140)
@@ -2307,6 +2381,8 @@ class DebtPlannerTab(ScrollableTab):
 
 ACCOUNT_TYPE_OPTIONS = [
     ("Cash / Bank", "cash", "asset"),
+    ("Savings", "savings", "asset"),
+    ("Emergency Fund", "emergency_fund", "asset"),
     ("Credit Card", "credit_card", "liability"),
     ("Loan", "loan", "liability"),
     ("Other Asset", "other", "asset"),
@@ -2338,6 +2414,7 @@ class AccountsTab(ScrollableTab):
         self.acc_cashback_rate = tk.StringVar(value="0")
         self.acc_cashback_cap = tk.StringVar(value="0")
         self.acc_due_day = tk.StringVar(value="1")
+        self.acc_institution = tk.StringVar()
 
         ttk.Label(form, text="Name", style="CardDim.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Entry(form, textvariable=self.acc_name, width=16).grid(row=1, column=0, padx=4)
@@ -2352,9 +2429,12 @@ class AccountsTab(ScrollableTab):
         self.currency_label.grid(row=0, column=3, sticky="w")
         self.currency_entry = ttk.Entry(form, textvariable=self.acc_currency, width=6)
         self.currency_entry.grid(row=1, column=3, padx=4)
-        ttk.Checkbutton(form, text="Liquid", variable=self.acc_liquid).grid(row=1, column=4, padx=6)
+        ttk.Label(form, text="Institution (optional)", style="CardDim.TLabel").grid(
+            row=0, column=4, sticky="w")
+        ttk.Entry(form, textvariable=self.acc_institution, width=12).grid(row=1, column=4, padx=4)
+        ttk.Checkbutton(form, text="Liquid", variable=self.acc_liquid).grid(row=1, column=5, padx=6)
         ttk.Button(form, text="Add Account", style="Good.TButton", command=self.add_account).grid(
-            row=1, column=5, padx=8)
+            row=1, column=6, padx=8)
 
         self.extra_frame = ttk.Frame(form, style="Card.TFrame")
         self.extra_frame.grid(row=2, column=0, columnspan=6, sticky="w", pady=(8, 0))
@@ -2376,7 +2456,9 @@ class AccountsTab(ScrollableTab):
         cols = ("name", "type", "balance", "currency", "liquid")
         acc_tree_frame = ttk.Frame(list_card, style="Card.TFrame")
         acc_tree_frame.pack(fill="x", expand=True)
-        self.tree = ttk.Treeview(acc_tree_frame, columns=cols, show="headings", height=6)
+        self.tree = ttk.Treeview(acc_tree_frame, columns=cols, show="tree headings", height=20)
+        self.tree.heading("#0", text="")
+        self.tree.column("#0", width=130, anchor="w")
         for c, label in zip(cols, ["Name", "Type", "Balance", "Ccy", "Liquid"]):
             self.tree.heading(c, text=label)
             self.tree.column(c, width=130)
@@ -2404,7 +2486,7 @@ class AccountsTab(ScrollableTab):
         transfers_tree_frame = ttk.Frame(transfers_card, style="Card.TFrame")
         transfers_tree_frame.pack(fill="x", expand=True)
         self.transfers_tree = ttk.Treeview(transfers_tree_frame, columns=transfer_cols,
-                                            show="headings", height=6)
+                                            show="headings", height=10)
         for col, label in zip(transfer_cols,
                                ["Date", "From", "To", "Amount", "Received", "Rate"]):
             self.transfers_tree.heading(col, text=label)
@@ -2414,8 +2496,12 @@ class AccountsTab(ScrollableTab):
                                                command=self.transfers_tree.yview)
         transfers_tree_scroll.pack(side="right", fill="y")
         self.transfers_tree.configure(yscrollcommand=transfers_tree_scroll.set)
-        ttk.Button(transfers_card, text="Delete Transfer", command=self.delete_selected_transfer).pack(
-            anchor="w", pady=(8, 0))
+        transfers_btn_row = ttk.Frame(transfers_card, style="Card.TFrame")
+        transfers_btn_row.pack(fill="x", pady=(8, 0))
+        ttk.Button(transfers_btn_row, text="Edit Transfer…",
+                   command=self.open_edit_transfer_dialog).pack(side="left")
+        ttk.Button(transfers_btn_row, text="Delete Transfer",
+                   command=self.delete_selected_transfer).pack(side="left", padx=6)
 
         cc_row = ttk.Frame(self)
         cc_row.pack(fill="x", pady=(0, 10))
@@ -2452,79 +2538,92 @@ class AccountsTab(ScrollableTab):
                 due_day = min(max(due_day, 1), 28)
             except ValueError:
                 due_day = None
-        liquid = self.acc_liquid.get() or subtype == "cash"
+        liquid = self.acc_liquid.get() or subtype in ("cash", "savings", "emergency_fund")
         self.app.db.add_account(name, kind, balance,
                                  self.acc_currency.get().strip().upper() or "GBP",
                                  liquid, subtype=subtype, credit_limit=credit_limit,
                                  cashback_rate=cashback_rate, due_day=due_day,
-                                 cashback_monthly_cap=cashback_cap)
+                                 cashback_monthly_cap=cashback_cap,
+                                 institution=self.acc_institution.get())
         self.acc_name.set("")
         self.acc_balance.set("")
+        self.acc_institution.set("")
         self.app.refresh_all()
 
+    def _selected_account_ids(self):
+        """Filters the account tree's selection down to real account rows,
+        ignoring institution group-header rows (iid "group:<name>") that a
+        multi-select or click could otherwise pick up."""
+        return [int(iid) for iid in self.tree.selection() if iid.isdigit()]
+
     def delete_selected(self):
-        for iid in self.tree.selection():
-            self.app.db.delete_account(int(iid))
+        for account_id in self._selected_account_ids():
+            self.app.db.delete_account(account_id)
         self.app.refresh_all()
 
     def open_edit_account_dialog(self):
-        sel = self.tree.selection()
-        if not sel:
+        ids = self._selected_account_ids()
+        if not ids:
             messagebox.showinfo("Edit Account", "Select an account first.")
             return
-        if len(sel) > 1:
+        if len(ids) > 1:
             messagebox.showinfo("Edit Account", "Select just one account to edit.")
             return
-        account_id = int(sel[0])
+        account_id = ids[0]
         acc = self.app.db.get_account(account_id)
         if not acc:
             return
 
-        win = tk.Toplevel(self)
-        win.title("Edit Account")
-        win.configure(bg=self.app.c["bg"])
-        win.geometry("380x620")
+        win, content = make_scrollable_toplevel(self, "Edit Account", "440x600")
 
-        ttk.Label(win, text="Name", style="TLabel").pack(anchor="w", padx=14, pady=(14, 2))
+        ttk.Label(content, text="Name", style="TLabel").pack(anchor="w", padx=14, pady=(14, 2))
         name_var = tk.StringVar(value=acc["name"])
-        ttk.Entry(win, textvariable=name_var).pack(fill="x", padx=14)
+        ttk.Entry(content, textvariable=name_var).pack(fill="x", padx=14)
 
-        ttk.Label(win, text="Currency", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        ttk.Label(content, text="Currency", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
         currency_var = tk.StringVar(value=acc["currency"])
-        ttk.Entry(win, textvariable=currency_var).pack(fill="x", padx=14)
+        ttk.Entry(content, textvariable=currency_var).pack(fill="x", padx=14)
 
-        ttk.Label(win, text="Balance", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        ttk.Label(content, text="Institution (optional)", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        institution_var = tk.StringVar(value=acc["institution"] or "")
+        ttk.Entry(content, textvariable=institution_var).pack(fill="x", padx=14)
+        ttk.Label(content, wraplength=340, justify="left", style="CardDim.TLabel",
+                  text="Groups accounts together in the list below, e.g. \"Lloyds\" for both a "
+                       "current and a student account there. Leave blank to keep it ungrouped."
+                  ).pack(anchor="w", padx=14, pady=(4, 0))
+
+        ttk.Label(content, text="Balance", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
         balance_var = tk.StringVar(value=str(acc["balance"]))
-        ttk.Entry(win, textvariable=balance_var).pack(fill="x", padx=14)
-        ttk.Label(win, wraplength=340, justify="left", style="CardDim.TLabel",
+        ttk.Entry(content, textvariable=balance_var).pack(fill="x", padx=14)
+        ttk.Label(content, wraplength=340, justify="left", style="CardDim.TLabel",
                   text="Directly sets the balance — no transaction is recorded. Use this to "
                        "backfill an account's starting balance without logging every past "
                        "transaction; use Reconcile… instead if you want an adjustment transaction."
                   ).pack(anchor="w", padx=14, pady=(4, 0))
 
         liquid_var = tk.BooleanVar(value=bool(acc["liquid"]))
-        ttk.Checkbutton(win, text="Liquid", variable=liquid_var).pack(anchor="w", padx=14, pady=(10, 0))
+        ttk.Checkbutton(content, text="Liquid", variable=liquid_var).pack(anchor="w", padx=14, pady=(10, 0))
 
         credit_limit_var = cashback_rate_var = cashback_cap_var = due_day_var = None
 
         if acc["subtype"] == "credit_card":
-            ttk.Label(win, text="Credit limit", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+            ttk.Label(content, text="Credit limit", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
             credit_limit_var = tk.StringVar(value=str(acc["credit_limit"] or 0))
-            ttk.Entry(win, textvariable=credit_limit_var).pack(fill="x", padx=14)
+            ttk.Entry(content, textvariable=credit_limit_var).pack(fill="x", padx=14)
 
-            ttk.Label(win, text="Cashback % on spend", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+            ttk.Label(content, text="Cashback % on spend", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
             cashback_rate_var = tk.StringVar(value=str(acc["cashback_rate"] or 0))
-            ttk.Entry(win, textvariable=cashback_rate_var).pack(fill="x", padx=14)
+            ttk.Entry(content, textvariable=cashback_rate_var).pack(fill="x", padx=14)
 
-            ttk.Label(win, text="Monthly cashback cap (0 = no cap)", style="TLabel").pack(
+            ttk.Label(content, text="Monthly cashback cap (0 = no cap)", style="TLabel").pack(
                 anchor="w", padx=14, pady=(10, 2))
             cashback_cap_var = tk.StringVar(value=str(acc["cashback_monthly_cap"] or 0))
-            ttk.Entry(win, textvariable=cashback_cap_var).pack(fill="x", padx=14)
+            ttk.Entry(content, textvariable=cashback_cap_var).pack(fill="x", padx=14)
 
-            ttk.Label(win, text="Payment due day (1-28)", style="TLabel").pack(
+            ttk.Label(content, text="Payment due day (1-28)", style="TLabel").pack(
                 anchor="w", padx=14, pady=(10, 2))
             due_day_var = tk.StringVar(value=str(acc["due_day"] or ""))
-            ttk.Entry(win, textvariable=due_day_var).pack(fill="x", padx=14)
+            ttk.Entry(content, textvariable=due_day_var).pack(fill="x", padx=14)
 
         def do_save():
             name = name_var.get().strip()
@@ -2538,7 +2637,7 @@ class AccountsTab(ScrollableTab):
                 messagebox.showerror("Edit Account", "Balance must be a number.")
                 return
             self.app.db.update_account_core(account_id, name=name, currency=currency,
-                                             liquid=liquid_var.get())
+                                             liquid=liquid_var.get(), institution=institution_var.get())
             self.app.db.update_account_balance(account_id, balance)
 
             details = {}
@@ -2570,7 +2669,7 @@ class AccountsTab(ScrollableTab):
             win.destroy()
             self.app.refresh_all()
 
-        ttk.Button(win, text="Save", style="Accent.TButton", command=do_save).pack(
+        ttk.Button(content, text="Save", style="Accent.TButton", command=do_save).pack(
             anchor="e", padx=14, pady=16)
 
     def open_transfer_dialog(self):
@@ -2578,43 +2677,40 @@ class AccountsTab(ScrollableTab):
         if len(accounts) < 2:
             messagebox.showinfo("Transfer", "You need at least two accounts to transfer between.")
             return
-        win = tk.Toplevel(self)
-        win.title("Transfer Between Accounts")
-        win.configure(bg=self.app.c["bg"])
-        win.geometry("380x320")
+        win, content = make_scrollable_toplevel(self, "Transfer Between Accounts", "440x420")
         names = [a["name"] for a in accounts]
         by_name = {a["name"]: a for a in accounts}
 
-        sel = self.tree.selection()
-        default_from = self.tree.item(sel[0])["values"][0] if sel else names[0]
+        ids = self._selected_account_ids()
+        default_from = self.app.db.get_account(ids[0])["name"] if ids else names[0]
 
-        ttk.Label(win, text="From account", style="TLabel").pack(anchor="w", padx=14, pady=(14, 2))
+        ttk.Label(content, text="From account", style="TLabel").pack(anchor="w", padx=14, pady=(14, 2))
         from_var = tk.StringVar(value=default_from)
-        ttk.Combobox(win, textvariable=from_var, values=names, state="readonly").pack(
+        ttk.Combobox(content, textvariable=from_var, values=names, state="readonly").pack(
             fill="x", padx=14)
 
-        ttk.Label(win, text="To account", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        ttk.Label(content, text="To account", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
         to_default = next((n for n in names if n != default_from), names[0])
         to_var = tk.StringVar(value=to_default)
-        ttk.Combobox(win, textvariable=to_var, values=names, state="readonly").pack(fill="x", padx=14)
+        ttk.Combobox(content, textvariable=to_var, values=names, state="readonly").pack(fill="x", padx=14)
 
-        ttk.Label(win, text="Amount (in From account's currency)", style="TLabel").pack(
+        ttk.Label(content, text="Amount (in From account's currency)", style="TLabel").pack(
             anchor="w", padx=14, pady=(10, 2))
         amount_var = tk.StringVar()
-        ttk.Entry(win, textvariable=amount_var).pack(fill="x", padx=14)
+        ttk.Entry(content, textvariable=amount_var).pack(fill="x", padx=14)
 
-        received_label = ttk.Label(win, text="Actual amount received (optional, in To account's currency)",
+        received_label = ttk.Label(content, text="Actual amount received (optional, in To account's currency)",
                                     style="TLabel")
         received_label.pack(anchor="w", padx=14, pady=(10, 2))
         received_var = tk.StringVar()
-        received_entry = ttk.Entry(win, textvariable=received_var)
+        received_entry = ttk.Entry(content, textvariable=received_var)
         received_entry.pack(fill="x", padx=14)
 
         note_var = tk.StringVar()
-        ttk.Label(win, text="Note (optional)", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
-        ttk.Entry(win, textvariable=note_var).pack(fill="x", padx=14)
+        ttk.Label(content, text="Note (optional)", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        ttk.Entry(content, textvariable=note_var).pack(fill="x", padx=14)
 
-        rate_label = ttk.Label(win, style="CardDim.TLabel")
+        rate_label = ttk.Label(content, style="CardDim.TLabel")
         rate_label.pack(anchor="w", padx=14, pady=(8, 0))
 
         def update_rate_preview(*_):
@@ -2678,15 +2774,15 @@ class AccountsTab(ScrollableTab):
             win.destroy()
             self.app.refresh_all()
 
-        ttk.Button(win, text="Transfer", style="Accent.TButton", command=do_transfer).pack(
+        ttk.Button(content, text="Transfer", style="Accent.TButton", command=do_transfer).pack(
             anchor="e", padx=14, pady=16)
 
     def export_account_statement(self):
-        sel = self.tree.selection()
-        if not sel:
+        ids = self._selected_account_ids()
+        if not ids:
             messagebox.showinfo("Export Statement", "Select an account first.")
             return
-        account_id = int(sel[0])
+        account_id = ids[0]
         acc = self.app.db.get_account(account_id)
         if not acc:
             return
@@ -2699,31 +2795,28 @@ class AccountsTab(ScrollableTab):
         messagebox.showinfo("Exported", f"Exported {n} row(s) of {acc['name']}'s statement to:\n{path}")
 
     def open_reconcile_dialog(self):
-        sel = self.tree.selection()
-        if not sel:
+        ids = self._selected_account_ids()
+        if not ids:
             messagebox.showinfo("Reconcile", "Select an account first.")
             return
-        account_id = int(sel[0])
+        account_id = ids[0]
         acc = self.app.db.get_account(account_id)
         if not acc:
             return
 
-        win = tk.Toplevel(self)
-        win.title("Reconcile Balance")
-        win.configure(bg=self.app.c["bg"])
-        win.geometry("360x220")
+        win, content = make_scrollable_toplevel(self, "Reconcile Balance", "420x280")
 
-        ttk.Label(win, text=f"{acc['name']} — tracked balance: "
+        ttk.Label(content, text=f"{acc['name']} — tracked balance: "
                              f"{fmt_money(acc['balance'], acc['currency'])}",
                   style="H2.TLabel", wraplength=320, justify="left").pack(
             anchor="w", padx=14, pady=(14, 8))
 
-        ttk.Label(win, text="Actual balance from your statement", style="TLabel").pack(
+        ttk.Label(content, text="Actual balance from your statement", style="TLabel").pack(
             anchor="w", padx=14, pady=(0, 2))
         actual_var = tk.StringVar(value=f"{acc['balance']:.2f}")
-        ttk.Entry(win, textvariable=actual_var).pack(fill="x", padx=14)
+        ttk.Entry(content, textvariable=actual_var).pack(fill="x", padx=14)
 
-        diff_label = ttk.Label(win, style="CardDim.TLabel")
+        diff_label = ttk.Label(content, style="CardDim.TLabel")
         diff_label.pack(anchor="w", padx=14, pady=(8, 0))
 
         def update_diff_preview(*_):
@@ -2757,7 +2850,112 @@ class AccountsTab(ScrollableTab):
             win.destroy()
             self.app.refresh_all()
 
-        ttk.Button(win, text="Reconcile", style="Accent.TButton", command=do_reconcile).pack(
+        ttk.Button(content, text="Reconcile", style="Accent.TButton", command=do_reconcile).pack(
+            anchor="e", padx=14, pady=16)
+
+    def open_edit_transfer_dialog(self):
+        from finance_core import ReconciledTransactionError
+
+        sel = self.transfers_tree.selection()
+        if not sel:
+            messagebox.showinfo("Edit Transfer", "Select a transfer first.")
+            return
+        if len(sel) > 1:
+            messagebox.showinfo("Edit Transfer", "Select just one transfer to edit.")
+            return
+        leg_id = int(sel[0])
+        leg = self.app.db.conn.execute(
+            "SELECT * FROM transactions WHERE id=?", (leg_id,)).fetchone()
+        if not leg or not leg["transfer_group_id"]:
+            return
+        group_id = leg["transfer_group_id"]
+        transfer = next((t for t in self.app.db.list_transfers()
+                          if t["transfer_group_id"] == group_id), None)
+        if not transfer:
+            return
+
+        accounts = self.app.db.list_accounts()
+        names = [a["name"] for a in accounts]
+        by_name = {a["name"]: a for a in accounts}
+        cross_currency = transfer["from_currency"] != transfer["to_currency"]
+
+        win, content = make_scrollable_toplevel(self, "Edit Transfer", "440x480")
+
+        ttk.Label(content, text="From account", style="TLabel").pack(anchor="w", padx=14, pady=(14, 2))
+        from_var = tk.StringVar(value=transfer["from_account"] or names[0])
+        ttk.Combobox(content, textvariable=from_var, values=names, state="readonly").pack(
+            fill="x", padx=14)
+
+        ttk.Label(content, text="To account", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        to_var = tk.StringVar(value=transfer["to_account"] or names[0])
+        ttk.Combobox(content, textvariable=to_var, values=names, state="readonly").pack(
+            fill="x", padx=14)
+
+        ttk.Label(content, text="Date (YYYY-MM-DD)", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        date_var = tk.StringVar(value=transfer["date"])
+        ttk.Entry(content, textvariable=date_var).pack(fill="x", padx=14)
+
+        ttk.Label(content, text="Amount (in From account's currency)", style="TLabel").pack(
+            anchor="w", padx=14, pady=(10, 2))
+        amount_var = tk.StringVar(value=f"{transfer['from_amount']:.2f}")
+        ttk.Entry(content, textvariable=amount_var).pack(fill="x", padx=14)
+
+        ttk.Label(content, text="Actual amount received (optional, in To account's currency)",
+                  style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        # Pre-filled with the transfer's existing converted amount (when the
+        # two currencies differ) so leaving this untouched preserves the
+        # original effective rate instead of silently re-deriving it from
+        # today's fx_rates -- only actually used if the accounts are still
+        # cross-currency by the time Save is clicked (see do_save below).
+        received_var = tk.StringVar(value=f"{transfer['to_amount']:.2f}" if cross_currency else "")
+        ttk.Entry(content, textvariable=received_var).pack(fill="x", padx=14)
+
+        note_var = tk.StringVar(value=leg["note"] or "")
+        ttk.Label(content, text="Note (optional)", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+        ttk.Entry(content, textvariable=note_var).pack(fill="x", padx=14)
+
+        def do_save():
+            try:
+                amount = float(amount_var.get())
+            except ValueError:
+                messagebox.showerror("Edit Transfer", "Enter a valid amount.")
+                return
+            frm, to = by_name.get(from_var.get()), by_name.get(to_var.get())
+            if not frm or not to:
+                messagebox.showerror("Edit Transfer", "Choose two accounts.")
+                return
+            try:
+                datetime.date.fromisoformat(date_var.get().strip())
+            except ValueError:
+                messagebox.showerror("Edit Transfer", "Date must be YYYY-MM-DD.")
+                return
+            to_amount = None
+            # Ignore a stale received-amount value if the accounts chosen
+            # now are same-currency -- it has no meaning there and would
+            # otherwise silently override the amount.
+            if frm["currency"] != to["currency"] and received_var.get().strip():
+                try:
+                    to_amount = float(received_var.get())
+                except ValueError:
+                    messagebox.showerror("Edit Transfer",
+                                          "Enter a valid received amount, or leave it blank.")
+                    return
+            try:
+                self.app.db.update_transfer(
+                    group_id, from_account_id=frm["id"], to_account_id=to["id"], amount=amount,
+                    to_amount=to_amount, date=date_var.get().strip(), note=note_var.get().strip())
+            except ReconciledTransactionError:
+                messagebox.showerror(
+                    "Edit Transfer",
+                    "This transfer is reconciled/locked. Unreconcile it first if you need to edit it.")
+                return
+            except ValueError as e:
+                messagebox.showerror("Edit Transfer", str(e))
+                return
+            win.destroy()
+            self.app.refresh_all()
+
+        ttk.Button(content, text="Save", style="Accent.TButton", command=do_save).pack(
             anchor="e", padx=14, pady=16)
 
     def delete_selected_transfer(self):
@@ -2780,28 +2978,25 @@ class AccountsTab(ScrollableTab):
         self.app.refresh_all()
 
     def open_account_ledger(self):
-        sel = self.tree.selection()
-        if not sel:
+        ids = self._selected_account_ids()
+        if not ids:
             messagebox.showinfo("Ledger", "Select an account first.")
             return
-        account_id = int(sel[0])
+        account_id = ids[0]
         acc = self.app.db.get_account(account_id)
         if not acc:
             return
 
-        win = tk.Toplevel(self)
-        win.title(f"Ledger — {acc['name']}")
-        win.geometry("760x460")
-        win.configure(bg=self.app.c["bg"])
+        win, content = make_scrollable_toplevel(self, f"Ledger — {acc['name']}", "800x540")
 
-        ttk.Label(win, text=f"{acc['name']} — running balance in {acc['currency']}  ·  "
-                             "double-click a row to edit (transfers must be edited from the "
-                             "Transactions tab or deleted/recreated)",
+        ttk.Label(content, text=f"{acc['name']} — running balance in {acc['currency']}  ·  "
+                             "double-click a row to edit (transfers are edited from the "
+                             "Accounts tab's Transfers list)",
                   style="H2.TLabel", wraplength=740, justify="left").pack(
             anchor="w", padx=10, pady=(10, 4))
 
         cols = ("date", "payee", "amount", "balance", "flags")
-        ledger_tree_frame = ttk.Frame(win)
+        ledger_tree_frame = ttk.Frame(content)
         ledger_tree_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         tree = ttk.Treeview(ledger_tree_frame, columns=cols, show="headings", height=18)
         for col, label, w in zip(cols, ["Date", "Payee/Transfer", "Amount", "Balance", ""],
@@ -2839,19 +3034,16 @@ class AccountsTab(ScrollableTab):
         acc = self.app.db.get_account(account_id)
         if not acc:
             return
-        win = tk.Toplevel(self)
-        win.title("Edit Cashback")
-        win.configure(bg=self.app.c["bg"])
-        win.geometry("320x200")
+        win, content = make_scrollable_toplevel(self, "Edit Cashback", "380x260")
 
-        ttk.Label(win, text="Cashback % on spend", style="TLabel").pack(anchor="w", padx=14, pady=(14, 2))
+        ttk.Label(content, text="Cashback % on spend", style="TLabel").pack(anchor="w", padx=14, pady=(14, 2))
         rate_var = tk.StringVar(value=f"{acc['cashback_rate']:.2f}")
-        ttk.Entry(win, textvariable=rate_var).pack(fill="x", padx=14)
+        ttk.Entry(content, textvariable=rate_var).pack(fill="x", padx=14)
 
-        ttk.Label(win, text="Monthly cashback cap (0 = no cap)", style="TLabel").pack(
+        ttk.Label(content, text="Monthly cashback cap (0 = no cap)", style="TLabel").pack(
             anchor="w", padx=14, pady=(10, 2))
         cap_var = tk.StringVar(value=f"{acc['cashback_monthly_cap']:.2f}")
-        ttk.Entry(win, textvariable=cap_var).pack(fill="x", padx=14)
+        ttk.Entry(content, textvariable=cap_var).pack(fill="x", padx=14)
 
         def save():
             try:
@@ -2865,19 +3057,16 @@ class AccountsTab(ScrollableTab):
             win.destroy()
             self.app.refresh_all()
 
-        ttk.Button(win, text="Save", style="Accent.TButton", command=save).pack(
+        ttk.Button(content, text="Save", style="Accent.TButton", command=save).pack(
             anchor="e", padx=14, pady=16)
 
     def _set_cashback_auto_invest(self, account_id):
         jar = self.app.db.get_or_create_roundup_jar()
         targets = [jar]
 
-        win = tk.Toplevel(self)
-        win.title("Cashback Destination")
-        win.configure(bg=self.app.c["bg"])
-        win.geometry("340x160")
+        win, content = make_scrollable_toplevel(self, "Cashback Destination", "400x220")
 
-        ttk.Label(win, text="Route this card's cashback straight into:", style="TLabel").pack(
+        ttk.Label(content, text="Route this card's cashback straight into:", style="TLabel").pack(
             anchor="w", padx=14, pady=(14, 4))
         names = ["(none — accumulate for manual redemption)"] + [a["name"] for a in targets]
         by_name = {a["name"]: a["id"] for a in targets}
@@ -2885,7 +3074,7 @@ class AccountsTab(ScrollableTab):
                          if a["id"] == self.app.db.get_account(account_id)["cashback_auto_invest_account_id"]),
                         names[0])
         target_var = tk.StringVar(value=current)
-        ttk.Combobox(win, textvariable=target_var, values=names, state="readonly").pack(fill="x", padx=14)
+        ttk.Combobox(content, textvariable=target_var, values=names, state="readonly").pack(fill="x", padx=14)
 
         def save():
             target_id = by_name.get(target_var.get(), 0)
@@ -2893,7 +3082,7 @@ class AccountsTab(ScrollableTab):
             win.destroy()
             self.app.refresh_all()
 
-        ttk.Button(win, text="Save", style="Accent.TButton", command=save).pack(anchor="e", padx=14, pady=16)
+        ttk.Button(content, text="Save", style="Accent.TButton", command=save).pack(anchor="e", padx=14, pady=16)
 
     def _set_due_day(self, account_id):
         day = simpledialog.askinteger("Payment Due Day", "Day of the month payment is due (1-28):",
@@ -2913,11 +3102,28 @@ class AccountsTab(ScrollableTab):
 
         for row in self.tree.get_children():
             self.tree.delete(row)
+        # Group accounts by institution (e.g. two Lloyds accounts sit under
+        # one "Lloyds" header) -- accounts with no institution set fall into
+        # a single "Other" group, listed last.
+        by_institution = {}
+        ungrouped = []
         for a in self.app.db.list_accounts():
-            type_label = ACCOUNT_TYPE_BY_SUBTYPE_KIND.get((a["subtype"], a["kind"]), "Other")
-            self.tree.insert("", "end", iid=str(a["id"]), values=(
-                a["name"], type_label, f"{a['balance']:,.2f}", a["currency"],
-                "yes" if a["liquid"] else "no"))
+            if a["institution"]:
+                by_institution.setdefault(a["institution"], []).append(a)
+            else:
+                ungrouped.append(a)
+        groups = sorted(by_institution.items())
+        if ungrouped:
+            groups.append(("Other", ungrouped))
+        self.tree.tag_configure("group", font=theme.Fonts.body_bold)
+        for group_name, accs in groups:
+            group_iid = f"group:{group_name}"
+            self.tree.insert("", "end", iid=group_iid, text=group_name, open=True, tags=("group",))
+            for a in accs:
+                type_label = ACCOUNT_TYPE_BY_SUBTYPE_KIND.get((a["subtype"], a["kind"]), "Other")
+                self.tree.insert(group_iid, "end", iid=str(a["id"]), values=(
+                    a["name"], type_label, f"{a['balance']:,.2f}", a["currency"],
+                    "yes" if a["liquid"] else "no"))
 
         for row in self.transfers_tree.get_children():
             self.transfers_tree.delete(row)
@@ -3054,7 +3260,8 @@ class NetWorthTab(ScrollableTab):
 
         breakdown = net_worth_breakdown(self.app.db)
         segment_colors = {"cash": c["good"], "credit_card": c["bad"],
-                           "loan": c["warn"], "other": c["text_faint"]}
+                           "loan": c["warn"], "other": c["text_faint"],
+                           "savings": c["accent"], "emergency_fund": c["accent_hover"]}
         segments = [(k.replace("_", " ").title(), abs(v), segment_colors.get(k, c["text_faint"]))
                     for k, v in breakdown.items() if abs(v) > 0.01]
         charts.draw_donut_chart(self.breakdown_canvas, segments, c,
@@ -3302,13 +3509,16 @@ class ForecastTab(ScrollableTab):
                 spend_by_cat[t["category_id"]] = spend_by_cat.get(t["category_id"], 0.0) - db.to_reporting(
                     t["amount"], t["currency"])
         spend_categories = [cat for cat in db.list_categories() if cat["kind"] in ("need", "want", "saving")]
+
+        def cat_color(cat, i):
+            return cat["color"] or CATEGORY_CHART_COLORS[i % len(CATEGORY_CHART_COLORS)]
+
         actual_segments = [
-            (cat["name"], spend_by_cat.get(cat["id"], 0.0), CATEGORY_CHART_COLORS[i % len(CATEGORY_CHART_COLORS)])
+            (cat["name"], spend_by_cat.get(cat["id"], 0.0), cat_color(cat, i))
             for i, cat in enumerate(spend_categories) if spend_by_cat.get(cat["id"], 0.0) > 0
         ]
         budgeted_segments = [
-            (cat["name"], cat["monthly_budget"] or 0.0,
-             CATEGORY_CHART_COLORS[i % len(CATEGORY_CHART_COLORS)])
+            (cat["name"], cat["monthly_budget"] or 0.0, cat_color(cat, i))
             for i, cat in enumerate(spend_categories) if (cat["monthly_budget"] or 0.0) > 0
         ]
         total_actual = sum(v for _, v, _ in actual_segments)
@@ -3860,24 +4070,21 @@ class SettingsTab(ScrollableTab):
         self.fx_list.config(state="disabled")
 
     def open_ignored_subscriptions_window(self):
-        win = tk.Toplevel(self)
-        win.title("Ignored Subscriptions")
-        win.configure(bg=self.app.c["bg"])
-        win.geometry("460x520")
+        win, content = make_scrollable_toplevel(self, "Ignored Subscriptions", "520x600")
 
-        ttk.Label(win, wraplength=420, justify="left", style="TLabel",
+        ttk.Label(content, wraplength=420, justify="left", style="TLabel",
                   text="Dismissed from the Recurring tab's Detected Subscriptions list — "
                        "deleting one here lets it resurface as a suggestion again, and can be "
                        "undone from Recently Deleted below."
                   ).pack(anchor="w", padx=14, pady=(14, 8))
 
-        list_frame = ttk.Frame(win)
+        list_frame = ttk.Frame(content)
         list_frame.pack(fill="both", expand=True, padx=14)
 
-        ttk.Separator(win).pack(fill="x", padx=14, pady=10)
+        ttk.Separator(content).pack(fill="x", padx=14, pady=10)
 
-        ttk.Label(win, text="Recently Deleted", style="H2.TLabel").pack(anchor="w", padx=14)
-        deleted_frame = ttk.Frame(win)
+        ttk.Label(content, text="Recently Deleted", style="H2.TLabel").pack(anchor="w", padx=14)
+        deleted_frame = ttk.Frame(content)
         deleted_frame.pack(fill="both", expand=True, padx=14, pady=(4, 14))
 
         def render():

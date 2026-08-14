@@ -71,7 +71,8 @@ class Database:
             name TEXT UNIQUE NOT NULL,
             kind TEXT NOT NULL CHECK(kind IN ('need','want','saving','income')),
             monthly_budget REAL DEFAULT 0,
-            sort_order INTEGER
+            sort_order INTEGER,
+            color TEXT
         );
 
         CREATE TABLE IF NOT EXISTS accounts (
@@ -87,7 +88,8 @@ class Database:
             contributions REAL DEFAULT 0,
             due_day INTEGER,
             cashback_auto_invest_account_id INTEGER REFERENCES accounts(id),
-            cashback_monthly_cap REAL DEFAULT 0
+            cashback_monthly_cap REAL DEFAULT 0,
+            institution TEXT
         );
 
         CREATE TABLE IF NOT EXISTS transactions (
@@ -244,6 +246,8 @@ class Database:
                        "REFERENCES accounts(id)")
         if "cashback_monthly_cap" not in acc_cols:
             c.execute("ALTER TABLE accounts ADD COLUMN cashback_monthly_cap REAL DEFAULT 0")  # 0 = no cap
+        if "institution" not in acc_cols:
+            c.execute("ALTER TABLE accounts ADD COLUMN institution TEXT")
 
         tx_cols = existing_cols("transactions")
         if "account_id" not in tx_cols:
@@ -310,6 +314,8 @@ class Database:
             # Backfill with id so pre-existing categories keep a stable order
             # (previously implicit alphabetical order) rather than all tying at 0.
             c.execute("UPDATE categories SET sort_order = id WHERE sort_order IS NULL")
+        if "color" not in cat_cols:
+            c.execute("ALTER TABLE categories ADD COLUMN color TEXT")
 
         # The 'investment' account subtype was removed -- any account still
         # carrying it (from before this migration) becomes a plain cash
@@ -498,7 +504,7 @@ class Database:
         self.conn.execute("UPDATE categories SET monthly_budget=? WHERE id=?", (amount, category_id))
         self.conn.commit()
 
-    def update_category(self, category_id, name=None, kind=None, monthly_budget=None):
+    def update_category(self, category_id, name=None, kind=None, monthly_budget=None, color=None):
         with self.conn:
             if name is not None:
                 self.conn.execute("UPDATE categories SET name=? WHERE id=?", (name, category_id))
@@ -507,6 +513,9 @@ class Database:
             if monthly_budget is not None:
                 self.conn.execute("UPDATE categories SET monthly_budget=? WHERE id=?",
                                    (monthly_budget, category_id))
+            if color is not None:
+                self.conn.execute("UPDATE categories SET color=? WHERE id=?",
+                                   (color or None, category_id))
 
     def delete_category(self, category_id):
         tx_count = self.conn.execute(
@@ -1055,12 +1064,14 @@ class Database:
         return self.conn.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
 
     def add_account(self, name, kind, balance, currency="GBP", liquid=False, subtype="cash",
-                     credit_limit=0.0, cashback_rate=0.0, due_day=None, cashback_monthly_cap=0.0):
+                     credit_limit=0.0, cashback_rate=0.0, due_day=None, cashback_monthly_cap=0.0,
+                     institution=None):
         self.conn.execute(
             "INSERT INTO accounts(name, kind, balance, currency, liquid, subtype, credit_limit, "
-            "cashback_rate, due_day, cashback_monthly_cap) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "cashback_rate, due_day, cashback_monthly_cap, institution) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (name, kind, balance, currency.upper(), int(liquid), subtype, credit_limit,
-             cashback_rate, due_day, cashback_monthly_cap),
+             cashback_rate, due_day, cashback_monthly_cap, (institution or "").strip() or None),
         )
         self.conn.commit()
 
@@ -1068,7 +1079,7 @@ class Database:
         self.conn.execute("UPDATE accounts SET balance=? WHERE id=?", (balance, account_id))
         self.conn.commit()
 
-    def update_account_core(self, account_id, name=None, currency=None, liquid=None):
+    def update_account_core(self, account_id, name=None, currency=None, liquid=None, institution=None):
         """Updates the identity-level fields update_account_details() doesn't
         cover. Deliberately excludes kind/subtype — those drive balance-effect
         sign logic elsewhere (asset vs. liability), so changing them isn't a
@@ -1082,6 +1093,9 @@ class Database:
             if liquid is not None:
                 self.conn.execute("UPDATE accounts SET liquid=? WHERE id=?",
                                    (int(liquid), account_id))
+            if institution is not None:
+                self.conn.execute("UPDATE accounts SET institution=? WHERE id=?",
+                                   (institution.strip() or None, account_id))
 
     def update_account_details(self, account_id, credit_limit=None, cashback_rate=None, due_day=None,
                                 cashback_auto_invest_account_id=None, cashback_monthly_cap=None):
@@ -1185,6 +1199,53 @@ class Database:
             self._apply_balance_effect_nocommit(to_fresh, abs(dest_amount), to["currency"])
 
         return group_id
+
+    def update_transfer(self, transfer_group_id, from_account_id=None, to_account_id=None,
+                         amount=None, to_amount=None, date=None, note=None,
+                         force_unreconciled=False):
+        """Edits an existing transfer, including which two accounts it's
+        between. Implemented as delete-the-pair-then-recreate-it rather
+        than an in-place field update, so it reuses transfer_between_
+        accounts()'s already-tested rate-freezing/cross-currency logic
+        instead of duplicating it — the recreated pair gets a fresh
+        transfer_group_id and row ids, which is fine since callers re-read
+        list_transfers() afterward rather than tracking the old ids.
+
+        All the new field values are validated *before* anything is
+        deleted, so a rejected edit (same account chosen twice, an unknown
+        account, a non-positive amount, an unknown transfer_group_id, or
+        either leg being reconciled) leaves the original transfer
+        untouched. This is two sequential atomic steps (delete, then
+        recreate) rather than one combined transaction — acceptable for a
+        local single-user app with no concurrent writers; the only extra
+        risk vs. a single transaction is a crash in the narrow window
+        between the two steps, which would leave the transfer deleted
+        rather than corrupted."""
+        legs = self.conn.execute(
+            "SELECT * FROM transactions WHERE transfer_group_id=? ORDER BY amount",
+            (transfer_group_id,),
+        ).fetchall()
+        if len(legs) != 2:
+            raise ValueError(f"No transfer found for group {transfer_group_id!r}.")
+        src_leg, dst_leg = legs[0], legs[1]  # negative (source) sorts before positive (destination)
+
+        new_from = src_leg["account_id"] if from_account_id is None else from_account_id
+        new_to = dst_leg["account_id"] if to_account_id is None else to_account_id
+        new_amount = abs(src_leg["amount"]) if amount is None else amount
+        new_date = src_leg["date"] if date is None else date
+        new_note = (src_leg["note"] or "") if note is None else note
+
+        if new_from == new_to:
+            raise ValueError("Choose two different accounts.")
+        if new_amount <= 0:
+            raise ValueError("Amount must be positive.")
+        if not self.get_account(new_from) or not self.get_account(new_to):
+            raise ValueError("Unknown account.")
+
+        self.delete_transaction(src_leg["id"], force_unreconciled=force_unreconciled,
+                                 delete_transfer_pair=True)
+        return self.transfer_between_accounts(new_from, new_to, new_amount, date=new_date,
+                                               note=new_note, to_amount=to_amount)
 
     def list_transfers(self, limit=500):
         """One row per transfer (both legs joined), newest first — for a

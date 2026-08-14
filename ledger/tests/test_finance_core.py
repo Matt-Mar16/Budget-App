@@ -825,6 +825,111 @@ def test_transfer_between_accounts_still_converts_via_fx_rates_when_to_amount_om
     db.close()
 
 
+def _transfer_group_id(db, from_id, to_id):
+    row = db.conn.execute(
+        "SELECT transfer_group_id FROM transactions WHERE account_id=? AND transfer_to_account_id=? "
+        "AND amount < 0", (from_id, to_id),
+    ).fetchone()
+    return row["transfer_group_id"]
+
+
+def test_update_transfer_changes_the_amount_and_fixes_up_both_balances(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 1000.0, currency="GBP")
+    db.add_account("Savings", "asset", 0.0, currency="GBP")
+    accs = {a["name"]: a["id"] for a in db.list_accounts()}
+    db.transfer_between_accounts(accs["Checking"], accs["Savings"], 100.0, date="2026-09-01")
+    group_id = _transfer_group_id(db, accs["Checking"], accs["Savings"])
+
+    db.update_transfer(group_id, amount=300.0)
+
+    assert db.get_account(accs["Checking"])["balance"] == pytest.approx(700.0)  # 1000 - 300
+    assert db.get_account(accs["Savings"])["balance"] == pytest.approx(300.0)
+    db.close()
+
+
+def test_update_transfer_can_change_which_accounts_it_is_between(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 1000.0, currency="GBP")
+    db.add_account("Savings", "asset", 0.0, currency="GBP")
+    db.add_account("Emergency Fund", "asset", 0.0, currency="GBP")
+    accs = {a["name"]: a["id"] for a in db.list_accounts()}
+    db.transfer_between_accounts(accs["Checking"], accs["Savings"], 100.0, date="2026-09-01")
+    group_id = _transfer_group_id(db, accs["Checking"], accs["Savings"])
+
+    # Redirect the same transfer to Emergency Fund instead of Savings.
+    db.update_transfer(group_id, to_account_id=accs["Emergency Fund"])
+
+    assert db.get_account(accs["Checking"])["balance"] == pytest.approx(900.0)  # unchanged effect
+    assert db.get_account(accs["Savings"])["balance"] == pytest.approx(0.0), \
+        "old destination must be reversed back to its original balance"
+    assert db.get_account(accs["Emergency Fund"])["balance"] == pytest.approx(100.0)
+    db.close()
+
+
+def test_update_transfer_recomputes_historical_rate_when_currency_changes(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 1000.0, currency="GBP")
+    db.add_account("Savings", "asset", 0.0, currency="GBP")
+    db.add_account("CAD Chequing", "asset", 0.0, currency="CAD")
+    accs = {a["name"]: a["id"] for a in db.list_accounts()}
+    db.set_fx_rate("CAD", 0.5)  # 1 GBP -> 2 CAD
+    db.transfer_between_accounts(accs["Checking"], accs["Savings"], 100.0, date="2026-09-01")
+    group_id = _transfer_group_id(db, accs["Checking"], accs["Savings"])
+
+    db.update_transfer(group_id, to_account_id=accs["CAD Chequing"])
+
+    assert db.get_account(accs["CAD Chequing"])["balance"] == pytest.approx(200.0)
+    db.close()
+
+
+def test_update_transfer_refuses_when_a_leg_is_reconciled(tmp_path):
+    from finance_core import ReconciledTransactionError
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 1000.0, currency="GBP")
+    db.add_account("Savings", "asset", 0.0, currency="GBP")
+    accs = {a["name"]: a["id"] for a in db.list_accounts()}
+    db.transfer_between_accounts(accs["Checking"], accs["Savings"], 100.0, date="2026-09-01")
+    group_id = _transfer_group_id(db, accs["Checking"], accs["Savings"])
+    src_id = db.conn.execute(
+        "SELECT id FROM transactions WHERE transfer_group_id=? AND amount < 0", (group_id,)
+    ).fetchone()["id"]
+    db.reconcile_transaction(src_id)
+
+    with pytest.raises(ReconciledTransactionError):
+        db.update_transfer(group_id, amount=50.0)
+
+    # Nothing should have changed -- balances still reflect the original transfer.
+    assert db.get_account(accs["Checking"])["balance"] == pytest.approx(900.0)
+    assert db.get_account(accs["Savings"])["balance"] == pytest.approx(100.0)
+    db.close()
+
+
+def test_update_transfer_rejects_same_from_and_to_account_without_destroying_the_original(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 1000.0, currency="GBP")
+    db.add_account("Savings", "asset", 0.0, currency="GBP")
+    accs = {a["name"]: a["id"] for a in db.list_accounts()}
+    db.transfer_between_accounts(accs["Checking"], accs["Savings"], 100.0, date="2026-09-01")
+    group_id = _transfer_group_id(db, accs["Checking"], accs["Savings"])
+
+    with pytest.raises(ValueError):
+        db.update_transfer(group_id, to_account_id=accs["Checking"])
+
+    # The original transfer must still exist and be untouched.
+    assert db.get_account(accs["Checking"])["balance"] == pytest.approx(900.0)
+    assert db.get_account(accs["Savings"])["balance"] == pytest.approx(100.0)
+    assert len(db.list_transfers()) == 1
+    db.close()
+
+
+def test_update_transfer_raises_for_an_unknown_group_id(tmp_path):
+    db = _db(tmp_path)
+    with pytest.raises(ValueError):
+        db.update_transfer("not-a-real-group-id", amount=10.0)
+    db.close()
+
+
 def test_add_transaction_routes_cashback_to_the_roundup_jar_as_a_plain_balance_credit(tmp_path):
     db = _db(tmp_path)
     jar = db.get_or_create_roundup_jar()
@@ -1540,6 +1645,28 @@ def test_update_category_leaves_unspecified_fields_unchanged(tmp_path):
     db.close()
 
 
+def test_update_category_sets_a_color(tmp_path):
+    db = _db(tmp_path)
+    db.add_category("Groceries Color", "need", 0)
+    cat_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries Color")
+
+    db.update_category(cat_id, color="#FF00AA")
+
+    cat = next(c for c in db.list_categories() if c["id"] == cat_id)
+    assert cat["color"] == "#FF00AA"
+    db.close()
+
+
+def test_new_category_has_no_color_by_default(tmp_path):
+    db = _db(tmp_path)
+    db.add_category("No Color Yet", "want", 0)
+
+    cat = next(c for c in db.list_categories() if c["name"] == "No Color Yet")
+
+    assert cat["color"] is None
+    db.close()
+
+
 def test_update_account_core_changes_name_currency_and_liquid(tmp_path):
     db = _db(tmp_path)
     db.add_account("Old Name", "asset", 100.0, currency="GBP", liquid=False)
@@ -1567,6 +1694,36 @@ def test_update_account_core_leaves_unspecified_fields_unchanged(tmp_path):
     assert acc["currency"] == "EUR"
     assert acc["liquid"] == 1
 
+    db.close()
+
+
+def test_add_account_stores_an_institution(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Student Account", "asset", 0.0, currency="GBP", institution="Lloyds")
+
+    acc = db.list_accounts()[0]
+    assert acc["institution"] == "Lloyds"
+    db.close()
+
+
+def test_new_account_has_no_institution_by_default(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("No Institution Yet", "asset", 0.0, currency="GBP")
+
+    acc = db.list_accounts()[0]
+    assert acc["institution"] is None
+    db.close()
+
+
+def test_update_account_core_sets_an_institution(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 0.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+
+    db.update_account_core(acc_id, institution="Lloyds")
+
+    acc = db.get_account(acc_id)
+    assert acc["institution"] == "Lloyds"
     db.close()
 
 
