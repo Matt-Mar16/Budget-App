@@ -497,6 +497,91 @@ def test_generate_due_recurring_does_not_repost_a_deactivated_once_item(tmp_path
     db.close()
 
 
+def test_post_recurring_item_posts_once_even_if_not_yet_due(tmp_path):
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 1000.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_recurring("Netflix", "Netflix", None, -15.0, "GBP", "monthly",
+                      "2026-09-20", account_id=acc_id)
+    recurring_id = db.list_recurring()[0]["id"]
+
+    # next_date (2026-09-20) hasn't arrived yet -- post_recurring_item must
+    # still post, unlike generate_due_recurring which would skip it.
+    tx_id = db.post_recurring_item(recurring_id)
+
+    assert isinstance(tx_id, int)
+    tx = db.conn.execute("SELECT * FROM transactions WHERE id=?", (tx_id,)).fetchone()
+    assert tx["amount"] == -15.0
+    assert tx["date"] == "2026-09-20"  # dated to the item's own next_date, not "today"
+    assert db.get_account(acc_id)["balance"] == pytest.approx(985.0)
+    db.close()
+
+
+def test_post_recurring_item_advances_next_date_like_generate_due_recurring(tmp_path):
+    db = _db(tmp_path)
+    db.add_recurring("Netflix", "Netflix", None, -15.0, "GBP", "monthly", "2026-09-20")
+    recurring_id = db.list_recurring()[0]["id"]
+
+    db.post_recurring_item(recurring_id)
+
+    item = db.list_recurring()[0]
+    assert item["next_date"] == "2026-10-20"
+    db.close()
+
+
+def test_post_recurring_item_deactivates_a_once_item_instead_of_advancing(tmp_path):
+    db = _db(tmp_path)
+    db.add_recurring("Car Insurance Renewal", "Insurer", None, -400.0, "GBP", "once",
+                      "2026-09-15")
+    recurring_id = db.list_recurring()[0]["id"]
+
+    db.post_recurring_item(recurring_id)
+
+    item = db.list_recurring()[0]
+    assert item["active"] == 0
+    assert item["next_date"] == "2026-09-15"
+    db.close()
+
+
+def test_post_recurring_item_raises_for_unknown_id(tmp_path):
+    db = _db(tmp_path)
+
+    with pytest.raises(ValueError):
+        db.post_recurring_item(999999)
+
+    db.close()
+
+
+def test_post_recurring_item_raises_for_inactive_item(tmp_path):
+    db = _db(tmp_path)
+    db.add_recurring("Car Insurance Renewal", "Insurer", None, -400.0, "GBP", "once",
+                      "2026-09-15")
+    recurring_id = db.list_recurring()[0]["id"]
+    db.post_recurring_item(recurring_id)  # deactivates it
+
+    with pytest.raises(ValueError):
+        db.post_recurring_item(recurring_id)
+
+    db.close()
+
+
+def test_generate_due_recurring_still_advances_a_custom_frequency_item_after_extraction(tmp_path):
+    # Regression check: the shared _post_recurring_once_nocommit extraction
+    # must not change generate_due_recurring's existing behavior.
+    db = _db(tmp_path)
+    db.add_account("Checking", "asset", 2000.0, currency="GBP")
+    acc_id = db.list_accounts()[0]["id"]
+    db.add_recurring("Rent", "Landlord", None, -500.0, "GBP", "custom", "2026-01-01",
+                      account_id=acc_id, custom_interval_months=4)
+
+    posted = db.generate_due_recurring(today=datetime.date(2026, 1, 5))
+
+    assert len(posted) == 1
+    assert db.list_recurring()[0]["next_date"] == "2026-05-01"
+    assert db.get_account(acc_id)["balance"] == pytest.approx(1500.0)
+    db.close()
+
+
 def test_upcoming_bills_includes_a_once_item_within_the_window(tmp_path):
     db = _db(tmp_path)
     db.add_recurring("Car Insurance Renewal", "Insurer", None, -400.0, "GBP", "once", "2026-08-20")

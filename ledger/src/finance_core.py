@@ -1406,6 +1406,28 @@ class Database:
             d = datetime.date(y, m, min(d.day, last.day))
         return d.isoformat()
 
+    def _post_recurring_once_nocommit(self, r, post_date):
+        """Inserts one transaction for recurring item `r`, dated `post_date`,
+        with the same balance/round-up effects add_transaction's callers
+        get elsewhere. No-commit: caller wraps this in `with self.conn:`.
+        Shared by generate_due_recurring (the automatic due-date scan) and
+        post_recurring_item (an explicit single-item post on demand) so
+        there's exactly one place that knows how a recurring item becomes
+        a real transaction."""
+        acc = self.get_account(r["account_id"]) if r["account_id"] else None
+        cur = self.conn.execute(
+            "INSERT INTO transactions(date, payee, category_id, amount, currency, note, account_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (post_date, r["payee"] or r["name"], r["category_id"], r["amount"],
+             r["currency"], f"Auto: {r['name']}", r["account_id"]),
+        )
+        tx_id = cur.lastrowid
+        if acc:
+            self._apply_balance_effect_nocommit(acc, r["amount"], r["currency"])
+        if r["amount"] < 0:
+            self._apply_roundup_nocommit(tx_id, post_date, r["amount"])
+        return tx_id
+
     def generate_due_recurring(self, today: Optional[datetime.date] = None):
         """Posts a real transaction for any active recurring item whose next_date
         has arrived, then rolls next_date forward. Safe to call every time the
@@ -1417,18 +1439,7 @@ class Database:
             for r in self.list_recurring(active_only=True):
                 guard = 0
                 while r["next_date"] <= today.isoformat() and guard < 36:
-                    acc = self.get_account(r["account_id"]) if r["account_id"] else None
-                    cur = self.conn.execute(
-                        "INSERT INTO transactions(date, payee, category_id, amount, currency, note, account_id) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (r["next_date"], r["payee"] or r["name"], r["category_id"], r["amount"],
-                         r["currency"], f"Auto: {r['name']}", r["account_id"]),
-                    )
-                    tx_id = cur.lastrowid
-                    if acc:
-                        self._apply_balance_effect_nocommit(acc, r["amount"], r["currency"])
-                    if r["amount"] < 0:
-                        self._apply_roundup_nocommit(tx_id, r["next_date"], r["amount"])
+                    self._post_recurring_once_nocommit(r, r["next_date"])
                     posted.append((r["name"], r["next_date"], r["amount"]))
                     if r["frequency"] == "once":
                         # A one-off planned transaction has no next occurrence --
@@ -1442,6 +1453,33 @@ class Database:
                     r["next_date"] = new_next
                     guard += 1
         return posted
+
+    def post_recurring_item(self, recurring_id):
+        """Posts recurring item `recurring_id` exactly once, right now --
+        unlike generate_due_recurring, this ignores whether next_date has
+        actually arrived (it's an explicit user action, e.g. the Dashboard's
+        Needs Attention 'Post Now' button on a bill that's upcoming but not
+        yet due). Dates the transaction to the item's own next_date (matching
+        generate_due_recurring's existing choice) -- not to "today", which is
+        why this takes no today parameter: nothing in this method would ever
+        read it. Then advances next_date (or deactivates, for a 'once' item)
+        the same way generate_due_recurring does. Returns the new transaction
+        id. Raises ValueError if recurring_id doesn't match an active
+        recurring item."""
+        with self.conn:
+            r = self.conn.execute(
+                "SELECT * FROM recurring WHERE id=? AND active=1", (recurring_id,)
+            ).fetchone()
+            if r is None:
+                raise ValueError(f"No active recurring item with id {recurring_id}")
+            tx_id = self._post_recurring_once_nocommit(r, r["next_date"])
+            if r["frequency"] == "once":
+                self.conn.execute("UPDATE recurring SET active=0 WHERE id=?", (r["id"],))
+            else:
+                new_next = self._advance_date(r["next_date"], r["frequency"],
+                                               custom_interval_months=r["custom_interval_months"])
+                self.conn.execute("UPDATE recurring SET next_date=? WHERE id=?", (new_next, r["id"]))
+        return tx_id
 
     # ---- net worth snapshots ----
     def record_networth_snapshot(self, date, net_worth):
