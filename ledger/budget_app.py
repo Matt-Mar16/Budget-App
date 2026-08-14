@@ -917,20 +917,21 @@ class DashboardTab(ScrollableTab):
         c = self.app.c
         self.section_frames = {}
         self.section_handles = {}
+        section_labels = dict(DASHBOARD_SECTIONS)
 
-        def start_section(key, label):
+        def start_section(key):
             outer = ttk.Frame(self)
             handle_row = ttk.Frame(outer)
             handle_row.pack(fill="x")
             handle = ttk.Label(handle_row, text="⠿", style="Dim.TLabel", cursor="fleur")
             handle.pack(side="left")
-            ttk.Label(handle_row, text=label, style="Dim.TLabel").pack(side="left", padx=(4, 0))
+            ttk.Label(handle_row, text=section_labels[key], style="Dim.TLabel").pack(side="left", padx=(4, 0))
             self.section_frames[key] = outer
             self.section_handles[key] = handle
             return outer
 
         # Safe-to-spend hero
-        hero_section = start_section("hero", "Safe to Spend")
+        hero_section = start_section("hero")
         hero = Card(hero_section, title="")
         hero.pack(fill="x", pady=(0, 10))
         ttk.Label(hero, text="SAFE TO SPEND / DAY", style="CardDim.TLabel").pack(anchor="w")
@@ -940,7 +941,7 @@ class DashboardTab(ScrollableTab):
         self.safe_to_spend_sub.pack(anchor="w", pady=(4, 0))
 
         # Metrics grid
-        metrics_section = start_section("metrics", "Key Metrics")
+        metrics_section = start_section("metrics")
         grid = ttk.Frame(metrics_section)
         grid.pack(fill="x", pady=(0, 10))
         self.metric_labels = {}
@@ -959,14 +960,14 @@ class DashboardTab(ScrollableTab):
             self.metric_labels[m] = val
 
         # Quick Actions -- content added in Task 6
-        quick_actions_section = start_section("quick_actions", "Quick Actions")
+        quick_actions_section = start_section("quick_actions")
         qa_card = Card(quick_actions_section, title="Quick Actions")
         qa_card.pack(fill="x", pady=(0, 10))
         self.quick_actions_row = ttk.Frame(qa_card, style="Card.TFrame")
         self.quick_actions_row.pack(fill="x")
 
         # Charts row: allocation donut + 6-month trend bar chart
-        charts_section = start_section("charts", "Charts")
+        charts_section = start_section("charts")
         charts_row = ttk.Frame(charts_section)
         charts_row.pack(fill="x", pady=(0, 10))
         charts_row.columnconfigure(0, weight=1)
@@ -996,14 +997,14 @@ class DashboardTab(ScrollableTab):
         self.trend_canvas.pack(fill="both", expand=True)
 
         # Needs Attention -- content added in Task 7
-        needs_attention_section = start_section("needs_attention", "Needs Attention")
+        needs_attention_section = start_section("needs_attention")
         na_card = Card(needs_attention_section, title="Needs Attention")
         na_card.pack(fill="x", pady=(0, 10))
         self.needs_attention_rows_frame = ttk.Frame(na_card, style="Card.TFrame")
         self.needs_attention_rows_frame.pack(fill="x")
 
         # Flags panel
-        flags_section = start_section("flags", "Flags & Nudges")
+        flags_section = start_section("flags")
         flags_card = Card(flags_section, title="Flags & Nudges")
         flags_card.pack(fill="both", expand=True)
         self.flags_text = tk.Text(flags_card, wrap="word", state="disabled", height=10,
@@ -1027,7 +1028,10 @@ class DashboardTab(ScrollableTab):
             self.section_frames[entry["key"]].pack_forget()
         for entry in layout:
             if entry["visible"]:
-                self.section_frames[entry["key"]].pack(fill="x", pady=5)
+                if entry["key"] == "flags":
+                    self.section_frames[entry["key"]].pack(fill="both", expand=True, pady=5)
+                else:
+                    self.section_frames[entry["key"]].pack(fill="x", pady=5)
         visible_rows = [
             (self.section_handles[e["key"]], self.section_frames[e["key"]], e["key"])
             for e in layout if e["visible"]
