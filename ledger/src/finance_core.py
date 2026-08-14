@@ -7,6 +7,7 @@ not machine learning or statistical modeling — a personal budgeting app
 doesn't need it, and simple arithmetic is easy to verify by hand.
 """
 
+import json
 import sqlite3
 import datetime
 import calendar
@@ -446,6 +447,35 @@ class Database:
             return int(self.get_setting(key, default))
         except (TypeError, ValueError):
             return default
+
+    # ---- Dashboard layout (raw storage only -- see budget_app.resolve_dashboard_layout
+    # for reconciliation against the currently-known section keys) ----
+    def get_dashboard_layout(self):
+        raw = self.get_setting("dashboard_layout", "")
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        out = []
+        for entry in data:
+            if (isinstance(entry, dict) and isinstance(entry.get("key"), str)
+                    and isinstance(entry.get("visible"), bool)):
+                out.append({"key": entry["key"], "visible": entry["visible"]})
+        return out
+
+    def set_dashboard_layout(self, layout):
+        for entry in layout:
+            if not isinstance(entry, dict) or not isinstance(entry.get("key"), str) \
+                    or not isinstance(entry.get("visible"), bool):
+                raise ValueError(f"Invalid dashboard layout entry: {entry!r}")
+        self.set_setting(
+            "dashboard_layout",
+            json.dumps([{"key": e["key"], "visible": e["visible"]} for e in layout]),
+        )
 
     # ---- FX ----
     def set_fx_rate(self, currency, rate):

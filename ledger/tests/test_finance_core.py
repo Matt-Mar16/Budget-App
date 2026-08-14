@@ -2550,3 +2550,49 @@ def test_set_category_order_does_not_affect_a_different_kind(tmp_path):
     needs_after = [c["id"] for c in db.list_categories() if c["kind"] == "need"]
     assert needs_after == needs_before, "reordering 'want' must not touch 'need' rows"
     db.close()
+
+
+def test_get_dashboard_layout_is_empty_by_default(tmp_path):
+    db = _db(tmp_path)
+
+    assert db.get_dashboard_layout() == []
+
+    db.close()
+
+
+def test_set_and_get_dashboard_layout_round_trips(tmp_path):
+    db = _db(tmp_path)
+    layout = [{"key": "hero", "visible": True}, {"key": "flags", "visible": False}]
+
+    db.set_dashboard_layout(layout)
+
+    assert db.get_dashboard_layout() == layout
+    db.close()
+
+
+def test_set_dashboard_layout_rejects_an_entry_missing_a_key(tmp_path):
+    db = _db(tmp_path)
+
+    with pytest.raises(ValueError):
+        db.set_dashboard_layout([{"visible": True}])
+
+    db.close()
+
+
+def test_set_dashboard_layout_rejects_a_non_boolean_visible(tmp_path):
+    db = _db(tmp_path)
+
+    with pytest.raises(ValueError):
+        db.set_dashboard_layout([{"key": "hero", "visible": "yes"}])
+
+    db.close()
+
+
+def test_get_dashboard_layout_defensively_returns_empty_for_corrupted_setting(tmp_path):
+    # simulates a hand-edited or pre-JSON settings row
+    db = _db(tmp_path)
+    db.set_setting("dashboard_layout", "not json at all")
+
+    assert db.get_dashboard_layout() == []
+
+    db.close()
