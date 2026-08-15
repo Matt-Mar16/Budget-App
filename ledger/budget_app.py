@@ -369,11 +369,14 @@ def add_resize_sash(parent, resize_target, persist, min_height=80):
     that wants the same drag-to-resize behavior (e.g. AccountsTab's
     account list)."""
     c = theme.Palette.c
-    # A thin strip, not a thick bar -- width earlier turned out not to be
-    # the actual problem (see add_resize_sash's own history: the real
-    # blocker was sections that had no sash at all, not this one being too
-    # thin), so there's no functional reason to keep it this tall.
-    sash_height = 6
+    # 6px turned out to be too thin to reliably land a press on with a
+    # real mouse -- a missed press means nothing ever gets dragged or
+    # persisted, which reads as "my resize didn't survive reopening" (the
+    # auto-fit pass then computes its own, smaller height on next launch,
+    # since nothing was ever actually saved to override it). 9px is a
+    # middle ground: still visually slim, but a meaningfully bigger target
+    # than 6px.
+    sash_height = 9
     sash = tk.Frame(parent, height=sash_height, bg=c["border"], cursor="sb_v_double_arrow")
     sash.pack(fill="x")
     sash.pack_propagate(False)
