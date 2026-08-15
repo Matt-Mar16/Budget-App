@@ -420,19 +420,32 @@ def build_resizable_section(outer, key, db, min_height=80):
     canvas.bind("<Leave>", _unbind_wheel_if_ours)
     canvas.bind("<Destroy>", _unbind_wheel_if_ours, add="+")
 
-    # Bottom-right corner resize grip -- drag to change this section's
-    # height live; the released height is clamped and persisted so it
-    # survives the next refresh/app restart. Hand-drawn (three short
-    # diagonal lines, like a browser textarea's resize handle) rather than
-    # a Unicode glyph -- a glyph the current font doesn't happen to include
-    # would render as nothing, leaving no visible target to grab at all.
-    grip_size = 16
-    grip = tk.Canvas(outer, width=grip_size, height=grip_size, highlightthickness=0,
-                      bg=c["bg"], cursor="size_nw_se")
-    for offset in (4, 8, 12):
-        grip.create_line(offset, grip_size - 2, grip_size - 2, offset,
-                          fill=c["text_dim"], width=1)
-    grip.place(relx=1.0, rely=1.0, anchor="se")
+    # Bottom resize sash -- a full-width thin strip below the scrollable
+    # body, not a small corner square. A corner grip is precise but easy to
+    # miss (a placed square only a handful of pixels on a side, sitting
+    # where it can end up overlapping the scrollbar's own corner); a
+    # full-width strip is a plain packed sibling with its own dedicated
+    # row, so there's no overlap to worry about and no need to land on an
+    # exact pixel -- anywhere along the strip drags. Height changes live;
+    # the released height is clamped and persisted so it survives the next
+    # refresh/app restart.
+    sash_height = 10
+    sash = tk.Frame(outer, height=sash_height, bg=c["border"], cursor="sb_v_double_arrow")
+    sash.pack(fill="x")
+    sash.pack_propagate(False)
+    dots = tk.Canvas(sash, height=sash_height, highlightthickness=0, bg=c["border"])
+    dots.pack(fill="both", expand=True)
+
+    def _position_dots(_e=None):
+        dots.delete("dot")
+        cx = dots.winfo_width() // 2
+        cy = sash_height // 2
+        for dx in (-10, 0, 10):
+            dots.create_oval(cx + dx - 1, cy - 1, cx + dx + 2, cy + 2,
+                              fill=c["text_dim"], outline="", tags="dot")
+
+    dots.bind("<Configure>", _position_dots)
+
     drag_state = {}
 
     def _on_grip_press(event):
@@ -451,9 +464,21 @@ def build_resizable_section(outer, key, db, min_height=80):
         drag_state.clear()
         db.set_dashboard_section_height(key, canvas.winfo_height())
 
-    grip.bind("<ButtonPress-1>", _on_grip_press)
-    grip.bind("<B1-Motion>", _on_grip_drag)
-    grip.bind("<ButtonRelease-1>", _on_grip_release)
+    def _sash_enter(_e=None):
+        sash.configure(bg=c["accent"])
+        dots.configure(bg=c["accent"])
+
+    def _sash_leave(_e=None):
+        if "start_y" not in drag_state:
+            sash.configure(bg=c["border"])
+            dots.configure(bg=c["border"])
+
+    for widget in (sash, dots):
+        widget.bind("<ButtonPress-1>", _on_grip_press)
+        widget.bind("<B1-Motion>", _on_grip_drag)
+        widget.bind("<ButtonRelease-1>", _on_grip_release)
+        widget.bind("<Enter>", _sash_enter)
+        widget.bind("<Leave>", _sash_leave)
 
     return content
 
