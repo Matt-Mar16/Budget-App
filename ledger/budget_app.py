@@ -2886,6 +2886,7 @@ class AccountsTab(ScrollableTab):
         acc_tree_scroll = ttk.Scrollbar(acc_tree_frame, orient="vertical", command=self.tree.yview)
         acc_tree_scroll.pack(side="right", fill="y")
         self.tree.configure(yscrollcommand=acc_tree_scroll.set)
+        self.tree.bind("<Double-1>", self._on_account_row_double_click)
         btn_row = ttk.Frame(list_card, style="Card.TFrame")
         btn_row.pack(fill="x", pady=(8, 0))
         ttk.Button(btn_row, text="Edit Selected Account…", command=self.open_edit_account_dialog).pack(
@@ -2916,6 +2917,7 @@ class AccountsTab(ScrollableTab):
                                                command=self.transfers_tree.yview)
         transfers_tree_scroll.pack(side="right", fill="y")
         self.transfers_tree.configure(yscrollcommand=transfers_tree_scroll.set)
+        self.transfers_tree.bind("<Double-1>", lambda e: self.open_edit_transfer_dialog())
         transfers_btn_row = ttk.Frame(transfers_card, style="Card.TFrame")
         transfers_btn_row.pack(fill="x", pady=(8, 0))
         ttk.Button(transfers_btn_row, text="Edit Transfer…",
@@ -2975,6 +2977,16 @@ class AccountsTab(ScrollableTab):
         ignoring institution group-header rows (iid "group:<name>") that a
         multi-select or click could otherwise pick up."""
         return [int(iid) for iid in self.tree.selection() if iid.isdigit()]
+
+    def _on_account_row_double_click(self, event):
+        # Double-clicking an institution header row (iid "group:<name>") is a
+        # silent no-op -- there's nothing to edit -- rather than opening the
+        # same "select an account first" message a header selection would
+        # already show via the Edit button.
+        iid = self.tree.identify_row(event.y)
+        if not iid or not iid.isdigit():
+            return
+        self.open_edit_account_dialog()
 
     def delete_selected(self):
         for account_id in self._selected_account_ids():
