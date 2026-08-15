@@ -356,6 +356,71 @@ def make_scrollable_toplevel(parent, title, geometry):
     return win, content
 
 
+def add_resize_sash(parent, resize_target, persist, min_height=80):
+    """Packs a full-width drag-to-resize strip into `parent`, below
+    whatever's already packed there. Dragging live-adjusts
+    resize_target's height (any widget answering .configure(height=...)/
+    .winfo_height() -- a Canvas, a plain Frame wrapping something with its
+    own internal scrollbar, etc.); releasing calls persist(new_height) to
+    save it. A full-width packed strip rather than a small placed corner
+    square, so there's no exact pixel to land on and nothing it can end up
+    layered underneath. Shared by build_resizable_section's Dashboard
+    sections and any other fixed-height, independently-scrollable area
+    that wants the same drag-to-resize behavior (e.g. AccountsTab's
+    account list)."""
+    c = theme.Palette.c
+    sash_height = 22
+    sash = tk.Frame(parent, height=sash_height, bg=c["border"], cursor="sb_v_double_arrow")
+    sash.pack(fill="x")
+    sash.pack_propagate(False)
+    dots = tk.Canvas(sash, height=sash_height, highlightthickness=0, bg=c["border"])
+    dots.pack(fill="both", expand=True)
+
+    def _position_dots(_e=None):
+        dots.delete("dot")
+        cx = dots.winfo_width() // 2
+        cy = sash_height // 2
+        for dx in (-14, 0, 14):
+            dots.create_oval(cx + dx - 2, cy - 2, cx + dx + 3, cy + 3,
+                              fill=c["text_dim"], outline="", tags="dot")
+
+    dots.bind("<Configure>", _position_dots)
+
+    drag_state = {}
+
+    def _on_press(event):
+        drag_state["start_y"] = event.y_root
+        drag_state["start_height"] = resize_target.winfo_height()
+
+    def _on_drag(event):
+        if "start_y" not in drag_state:
+            return
+        delta = event.y_root - drag_state["start_y"]
+        resize_target.configure(height=max(min_height, drag_state["start_height"] + delta))
+
+    def _on_release(_event):
+        if "start_y" not in drag_state:
+            return
+        drag_state.clear()
+        persist(resize_target.winfo_height())
+
+    def _sash_enter(_e=None):
+        sash.configure(bg=c["accent"])
+        dots.configure(bg=c["accent"])
+
+    def _sash_leave(_e=None):
+        if "start_y" not in drag_state:
+            sash.configure(bg=c["border"])
+            dots.configure(bg=c["border"])
+
+    for widget in (sash, dots):
+        widget.bind("<ButtonPress-1>", _on_press)
+        widget.bind("<B1-Motion>", _on_drag)
+        widget.bind("<ButtonRelease-1>", _on_release)
+        widget.bind("<Enter>", _sash_enter)
+        widget.bind("<Leave>", _sash_leave)
+
+
 def build_resizable_section(outer, key, db, min_height=80):
     """Wraps a Dashboard section's content in a fixed-height, independently
     scrollable Canvas with a drag-to-resize grip in its bottom-right corner
@@ -420,65 +485,7 @@ def build_resizable_section(outer, key, db, min_height=80):
     canvas.bind("<Leave>", _unbind_wheel_if_ours)
     canvas.bind("<Destroy>", _unbind_wheel_if_ours, add="+")
 
-    # Bottom resize sash -- a full-width thin strip below the scrollable
-    # body, not a small corner square. A corner grip is precise but easy to
-    # miss (a placed square only a handful of pixels on a side, sitting
-    # where it can end up overlapping the scrollbar's own corner); a
-    # full-width strip is a plain packed sibling with its own dedicated
-    # row, so there's no overlap to worry about and no need to land on an
-    # exact pixel -- anywhere along the strip drags. Height changes live;
-    # the released height is clamped and persisted so it survives the next
-    # refresh/app restart.
-    sash_height = 22
-    sash = tk.Frame(outer, height=sash_height, bg=c["border"], cursor="sb_v_double_arrow")
-    sash.pack(fill="x")
-    sash.pack_propagate(False)
-    dots = tk.Canvas(sash, height=sash_height, highlightthickness=0, bg=c["border"])
-    dots.pack(fill="both", expand=True)
-
-    def _position_dots(_e=None):
-        dots.delete("dot")
-        cx = dots.winfo_width() // 2
-        cy = sash_height // 2
-        for dx in (-14, 0, 14):
-            dots.create_oval(cx + dx - 2, cy - 2, cx + dx + 3, cy + 3,
-                              fill=c["text_dim"], outline="", tags="dot")
-
-    dots.bind("<Configure>", _position_dots)
-
-    drag_state = {}
-
-    def _on_grip_press(event):
-        drag_state["start_y"] = event.y_root
-        drag_state["start_height"] = canvas.winfo_height()
-
-    def _on_grip_drag(event):
-        if "start_y" not in drag_state:
-            return
-        delta = event.y_root - drag_state["start_y"]
-        canvas.configure(height=max(min_height, drag_state["start_height"] + delta))
-
-    def _on_grip_release(_event):
-        if "start_y" not in drag_state:
-            return
-        drag_state.clear()
-        db.set_dashboard_section_height(key, canvas.winfo_height())
-
-    def _sash_enter(_e=None):
-        sash.configure(bg=c["accent"])
-        dots.configure(bg=c["accent"])
-
-    def _sash_leave(_e=None):
-        if "start_y" not in drag_state:
-            sash.configure(bg=c["border"])
-            dots.configure(bg=c["border"])
-
-    for widget in (sash, dots):
-        widget.bind("<ButtonPress-1>", _on_grip_press)
-        widget.bind("<B1-Motion>", _on_grip_drag)
-        widget.bind("<ButtonRelease-1>", _on_grip_release)
-        widget.bind("<Enter>", _sash_enter)
-        widget.bind("<Leave>", _sash_leave)
+    add_resize_sash(outer, canvas, lambda h: db.set_dashboard_section_height(key, h), min_height)
 
     return content
 
@@ -3017,19 +3024,34 @@ class AccountsTab(ScrollableTab):
         list_card = Card(self, title="Accounts")
         list_card.pack(fill="x", pady=(0, 10))
         cols = ("name", "type", "balance", "currency", "liquid")
-        acc_tree_frame = ttk.Frame(list_card, style="Card.TFrame")
-        acc_tree_frame.pack(fill="x", expand=True)
+        # Fixed-height wrapper (pack_propagate(False)) so the list has a
+        # bounded, user-draggable height instead of always rendering all 20
+        # of the Treeview's requested rows -- the Treeview's own scrollbar
+        # (below) handles anything that doesn't fit, exactly like every
+        # other Treeview in the app already does when the page itself is
+        # taller than the window.
+        list_body_height = self.app.db.get_setting_int("accounts_list_height", 340)
+        list_body = tk.Frame(list_card, height=list_body_height)
+        list_body.pack(fill="x")
+        list_body.pack_propagate(False)
+        acc_tree_frame = ttk.Frame(list_body, style="Card.TFrame")
+        acc_tree_frame.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(acc_tree_frame, columns=cols, show="tree headings", height=20)
         self.tree.heading("#0", text="")
         self.tree.column("#0", width=130, anchor="w")
         for c, label in zip(cols, ["Name", "Type", "Balance", "Ccy", "Liquid"]):
             self.tree.heading(c, text=label)
             self.tree.column(c, width=130)
-        self.tree.pack(side="left", fill="x", expand=True)
+        self.tree.pack(side="left", fill="both", expand=True)
         acc_tree_scroll = ttk.Scrollbar(acc_tree_frame, orient="vertical", command=self.tree.yview)
         acc_tree_scroll.pack(side="right", fill="y")
         self.tree.configure(yscrollcommand=acc_tree_scroll.set)
         self.tree.bind("<Double-1>", self._on_account_row_double_click)
+        add_resize_sash(
+            list_card, list_body,
+            lambda h: self.app.db.set_setting("accounts_list_height", str(h)),
+            min_height=120,
+        )
         btn_row = ttk.Frame(list_card, style="Card.TFrame")
         btn_row.pack(fill="x", pady=(8, 0))
         ttk.Button(btn_row, text="Edit Selected Account…", command=self.open_edit_account_dialog).pack(
