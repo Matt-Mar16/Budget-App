@@ -2596,3 +2596,87 @@ def test_get_dashboard_layout_defensively_returns_empty_for_corrupted_setting(tm
     assert db.get_dashboard_layout() == []
 
     db.close()
+
+
+def test_get_dashboard_section_heights_is_empty_by_default(tmp_path):
+    db = _db(tmp_path)
+
+    assert db.get_dashboard_section_heights() == {}
+
+    db.close()
+
+
+def test_set_and_get_dashboard_section_height_round_trips(tmp_path):
+    db = _db(tmp_path)
+
+    db.set_dashboard_section_height("needs_attention", 340)
+
+    assert db.get_dashboard_section_heights() == {"needs_attention": 340}
+    db.close()
+
+
+def test_set_dashboard_section_height_merges_with_existing_heights(tmp_path):
+    db = _db(tmp_path)
+    db.set_dashboard_section_height("hero", 160)
+
+    db.set_dashboard_section_height("flags", 220)
+
+    assert db.get_dashboard_section_heights() == {"hero": 160, "flags": 220}
+    db.close()
+
+
+def test_set_dashboard_section_height_overwrites_an_existing_key(tmp_path):
+    db = _db(tmp_path)
+    db.set_dashboard_section_height("hero", 160)
+
+    db.set_dashboard_section_height("hero", 300)
+
+    assert db.get_dashboard_section_heights() == {"hero": 300}
+    db.close()
+
+
+def test_set_dashboard_section_height_rejects_a_non_string_key(tmp_path):
+    db = _db(tmp_path)
+
+    with pytest.raises(ValueError):
+        db.set_dashboard_section_height(123, 200)
+
+    db.close()
+
+
+def test_set_dashboard_section_height_rejects_a_non_positive_height(tmp_path):
+    db = _db(tmp_path)
+
+    with pytest.raises(ValueError):
+        db.set_dashboard_section_height("hero", 0)
+
+    db.close()
+
+
+def test_set_dashboard_section_height_rejects_a_non_integer_height(tmp_path):
+    db = _db(tmp_path)
+
+    with pytest.raises(ValueError):
+        db.set_dashboard_section_height("hero", 150.5)
+
+    db.close()
+
+
+def test_get_dashboard_section_heights_defensively_returns_empty_for_corrupted_setting(tmp_path):
+    # simulates a hand-edited or pre-JSON settings row
+    db = _db(tmp_path)
+    db.set_setting("dashboard_section_heights", "not json at all")
+
+    assert db.get_dashboard_section_heights() == {}
+
+    db.close()
+
+
+def test_get_dashboard_section_heights_ignores_malformed_entries(tmp_path):
+    # simulates a hand-edited settings row with a bad value mixed in
+    db = _db(tmp_path)
+    db.set_setting("dashboard_section_heights", '{"hero": 160, "flags": "tall"}')
+
+    assert db.get_dashboard_section_heights() == {"hero": 160}
+
+    db.close()

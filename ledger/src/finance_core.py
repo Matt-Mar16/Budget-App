@@ -477,6 +477,30 @@ class Database:
             json.dumps([{"key": e["key"], "visible": e["visible"]} for e in layout]),
         )
 
+    # ---- Dashboard section heights (raw storage only -- no knowledge of
+    # which keys are currently valid, same division of responsibility as
+    # dashboard_layout above) ----
+    def get_dashboard_section_heights(self):
+        raw = self.get_setting("dashboard_section_heights", "")
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)}
+
+    def set_dashboard_section_height(self, key, height):
+        if not isinstance(key, str):
+            raise ValueError(f"Invalid dashboard section key: {key!r}")
+        if isinstance(height, bool) or not isinstance(height, int) or height <= 0:
+            raise ValueError(f"Invalid dashboard section height: {height!r}")
+        heights = self.get_dashboard_section_heights()
+        heights[key] = height
+        self.set_setting("dashboard_section_heights", json.dumps(heights))
+
     # ---- FX ----
     def set_fx_rate(self, currency, rate):
         self.conn.execute(

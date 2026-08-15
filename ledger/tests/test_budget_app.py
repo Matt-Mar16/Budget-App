@@ -2,6 +2,7 @@ from finance_core import Database
 from budget_app import (
     get_hidden_nav_tabs, set_hidden_nav_tabs, visible_nav_groups, NAV_GROUPS, PROTECTED_NAV_KEYS,
     DASHBOARD_SECTION_KEYS, resolve_dashboard_layout, submit_new_transaction,
+    DASHBOARD_SECTION_DEFAULT_HEIGHTS, DASHBOARD_SECTION_MIN_HEIGHT, resolve_dashboard_section_height,
 )
 
 
@@ -114,6 +115,39 @@ def test_resolve_dashboard_layout_drops_an_unknown_saved_key(tmp_path):
     result = resolve_dashboard_layout(db)
 
     assert "old_removed_section" not in {e["key"] for e in result}
+    db.close()
+
+
+def test_resolve_dashboard_section_height_defaults_when_nothing_saved(tmp_path):
+    db = _db(tmp_path)
+
+    for key in DASHBOARD_SECTION_KEYS:
+        assert resolve_dashboard_section_height(db, key) == DASHBOARD_SECTION_DEFAULT_HEIGHTS[key]
+    db.close()
+
+
+def test_resolve_dashboard_section_height_uses_a_persisted_value(tmp_path):
+    db = _db(tmp_path)
+    db.set_dashboard_section_height("needs_attention", 340)
+
+    assert resolve_dashboard_section_height(db, "needs_attention") == 340
+    db.close()
+
+
+def test_resolve_dashboard_section_height_falls_back_below_the_minimum(tmp_path):
+    # simulates a hand-edited settings row below the enforced minimum
+    db = _db(tmp_path)
+    db.set_setting("dashboard_section_heights", '{"hero": 10}')
+
+    assert resolve_dashboard_section_height(db, "hero") == DASHBOARD_SECTION_DEFAULT_HEIGHTS["hero"]
+    assert DASHBOARD_SECTION_MIN_HEIGHT > 10
+    db.close()
+
+
+def test_resolve_dashboard_section_height_falls_back_for_an_unknown_key(tmp_path):
+    db = _db(tmp_path)
+
+    assert resolve_dashboard_section_height(db, "some_future_section") == 200
     db.close()
 
 

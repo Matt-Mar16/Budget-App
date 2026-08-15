@@ -356,6 +356,100 @@ def make_scrollable_toplevel(parent, title, geometry):
     return win, content
 
 
+def build_resizable_section(outer, key, db, min_height=80):
+    """Wraps a Dashboard section's content in a fixed-height, independently
+    scrollable Canvas with a drag-to-resize grip in its bottom-right corner
+    -- the same canvas-embedding trick as make_scrollable_toplevel/
+    ScrollableTab, except the height is explicit (user-draggable, persisted
+    via Database.set_dashboard_section_height) rather than driven by
+    however much space the parent happens to have. Returns the inner
+    content frame -- callers parent their section's own widgets into it
+    exactly as they would into a plain frame."""
+    c = theme.Palette.c
+    height = resolve_dashboard_section_height(db, key)
+
+    body = ttk.Frame(outer)
+    body.pack(fill="x")
+
+    canvas = tk.Canvas(body, height=height, highlightthickness=0, bg=c["bg"])
+    vsb = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=vsb.set)
+    canvas.pack(side="left", fill="both", expand=True)
+    vsb.pack(side="right", fill="y")
+
+    content = ttk.Frame(canvas)
+    window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+
+    def _update_scrollbar_visibility():
+        bbox = canvas.bbox("all")
+        content_height = (bbox[3] - bbox[1]) if bbox else 0
+        if content_height > canvas.winfo_height():
+            vsb.pack(side="right", fill="y")
+        else:
+            vsb.pack_forget()
+
+    def _on_content_configure(_e):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+        _update_scrollbar_visibility()
+
+    def _on_canvas_configure(e):
+        canvas.itemconfig(window_id, width=e.width)
+        _update_scrollbar_visibility()
+
+    content.bind("<Configure>", _on_content_configure)
+    canvas.bind("<Configure>", _on_canvas_configure)
+
+    def _on_wheel(event):
+        if isinstance(event.widget, (ttk.Treeview, tk.Text)):
+            return
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _bind_wheel(_e=None):
+        canvas._wheel_funcid = canvas.bind_all("<MouseWheel>", _on_wheel)
+
+    def _unbind_wheel_if_ours(_e=None):
+        # Same ownership guard as ScrollableTab/make_scrollable_toplevel --
+        # bind_all is process-wide, so only clear it if it's still pointing
+        # at OUR handler.
+        funcid = getattr(canvas, "_wheel_funcid", None)
+        if funcid and funcid in canvas.bind_all("<MouseWheel>"):
+            canvas.unbind_all("<MouseWheel>")
+        canvas._wheel_funcid = None
+
+    canvas.bind("<Enter>", _bind_wheel)
+    canvas.bind("<Leave>", _unbind_wheel_if_ours)
+    canvas.bind("<Destroy>", _unbind_wheel_if_ours, add="+")
+
+    # Bottom-right corner resize grip -- drag to change this section's
+    # height live; the released height is clamped and persisted so it
+    # survives the next refresh/app restart.
+    grip = ttk.Label(outer, text="⤡", style="Dim.TLabel", cursor="size_nw_se")
+    grip.place(relx=1.0, rely=1.0, anchor="se")
+    drag_state = {}
+
+    def _on_grip_press(event):
+        drag_state["start_y"] = event.y_root
+        drag_state["start_height"] = canvas.winfo_height()
+
+    def _on_grip_drag(event):
+        if "start_y" not in drag_state:
+            return
+        delta = event.y_root - drag_state["start_y"]
+        canvas.configure(height=max(min_height, drag_state["start_height"] + delta))
+
+    def _on_grip_release(_event):
+        if "start_y" not in drag_state:
+            return
+        drag_state.clear()
+        db.set_dashboard_section_height(key, canvas.winfo_height())
+
+    grip.bind("<ButtonPress-1>", _on_grip_press)
+    grip.bind("<B1-Motion>", _on_grip_drag)
+    grip.bind("<ButtonRelease-1>", _on_grip_release)
+
+    return content
+
+
 def metric_cell(parent, title, accent_color=None):
     """A titled stat card. accent_color, if given, colors just the title
     label -- purely decorative variety between cards, kept visually
@@ -609,6 +703,32 @@ def resolve_dashboard_layout(db):
         if key not in present:
             result.append({"key": key, "visible": True})
     return result
+
+
+# Per-section starting height (px) before the user ever drags a corner grip
+# -- roughly each section's natural content height at the time this was
+# built, so a fresh profile doesn't open with everything needlessly clipped.
+DASHBOARD_SECTION_DEFAULT_HEIGHTS = {
+    "hero": 140,
+    "metrics": 220,
+    "quick_actions": 90,
+    "charts": 320,
+    "needs_attention": 260,
+    "flags": 220,
+}
+DASHBOARD_SECTION_MIN_HEIGHT = 80
+
+
+def resolve_dashboard_section_height(db, key):
+    """Persisted height for one Dashboard section, falling back to its
+    hardcoded default -- same reconciliation responsibility as
+    resolve_dashboard_layout (finance_core stores raw heights with no
+    knowledge of which section keys currently exist or what a sane default
+    looks like)."""
+    height = db.get_dashboard_section_heights().get(key)
+    if isinstance(height, int) and height >= DASHBOARD_SECTION_MIN_HEIGHT:
+        return height
+    return DASHBOARD_SECTION_DEFAULT_HEIGHTS.get(key, 200)
 
 
 def submit_new_transaction(app, date, payee, category_name, amount_raw, currency, note,
@@ -982,7 +1102,7 @@ class DashboardTab(ScrollableTab):
             ttk.Label(handle_row, text=section_labels[key], style="Dim.TLabel").pack(side="left", padx=(4, 0))
             self.section_frames[key] = outer
             self.section_handles[key] = handle
-            return outer
+            return build_resizable_section(outer, key, self.app.db)
 
         # Safe-to-spend hero
         hero_section = start_section("hero")
@@ -1090,10 +1210,7 @@ class DashboardTab(ScrollableTab):
             self.section_frames[entry["key"]].pack_forget()
         for entry in layout:
             if entry["visible"]:
-                if entry["key"] == "flags":
-                    self.section_frames[entry["key"]].pack(fill="both", expand=True, pady=5)
-                else:
-                    self.section_frames[entry["key"]].pack(fill="x", pady=5)
+                self.section_frames[entry["key"]].pack(fill="x", pady=5)
         visible_rows = [
             (self.section_handles[e["key"]], self.section_frames[e["key"]], e["key"])
             for e in layout if e["visible"]
@@ -1115,13 +1232,6 @@ class DashboardTab(ScrollableTab):
             for entry in layout
         ]
         self.app.db.set_dashboard_layout(new_layout)
-        # force=True: enable_drag_reorder's own on_release already repacked
-        # every row with its generic fill="x" before calling us -- including
-        # "flags", which needs fill="both"/expand=True. A plain click (press
-        # and release with no actual move) writes back an unchanged layout,
-        # so without forcing this, _apply_layout's no-op-on-unchanged-layout
-        # cache would skip re-applying flags' special-cased packing and
-        # leave it stuck at fill="x" until a real reorder happens elsewhere.
         self._apply_layout(force=True)
 
     def open_add_transaction_dialog(self):
