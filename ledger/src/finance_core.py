@@ -942,8 +942,15 @@ class Database:
             )
 
     def list_outstanding_reimbursements(self):
+        """The reimbursements table has no currency of its own -- an amount
+        owed is always in the currency of the transaction it was split off
+        of, so that's joined in explicitly rather than left for a caller to
+        assume the reporting currency (a bug this fixed: both existing call
+        sites were formatting every reimbursement in the reporting currency
+        regardless of what it was actually logged in)."""
         return self.conn.execute(
-            "SELECT r.*, t.payee as payee, t.date as transaction_date FROM reimbursements r "
+            "SELECT r.*, t.payee as payee, t.date as transaction_date, t.currency as currency "
+            "FROM reimbursements r "
             "JOIN transactions t ON r.transaction_id = t.id "
             "WHERE r.status='pending' ORDER BY t.date DESC"
         ).fetchall()

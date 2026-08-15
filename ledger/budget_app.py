@@ -143,7 +143,15 @@ def enable_drag_reorder(handles_and_rows, on_reorder):
     if not rows:
         return
     parent = rows[0].master
+    # Callers (BudgetsTab.refresh(), DashboardTab._apply_layout()) may call
+    # this repeatedly on the same parent as data changes -- destroy any
+    # indicator left over from a previous call instead of leaking a new
+    # tk.Frame into the widget tree every time.
+    old_indicator = getattr(parent, "_drag_indicator", None)
+    if old_indicator is not None:
+        old_indicator.destroy()
     indicator = tk.Frame(parent, height=3, bg=theme.Palette.c["accent"])
+    parent._drag_indicator = indicator
     dragging = {"row": None, "target_before": None}
 
     def gap_before(row, pointer_y):
@@ -1036,9 +1044,9 @@ class DashboardTab(ScrollableTab):
 
         self._apply_layout()
 
-    def _apply_layout(self):
+    def _apply_layout(self, force=False):
         layout = resolve_dashboard_layout(self.app.db)
-        if layout == getattr(self, "_applied_layout", None):
+        if not force and layout == getattr(self, "_applied_layout", None):
             return
         self._applied_layout = layout
         for entry in layout:
@@ -1070,7 +1078,14 @@ class DashboardTab(ScrollableTab):
             for entry in layout
         ]
         self.app.db.set_dashboard_layout(new_layout)
-        self._apply_layout()
+        # force=True: enable_drag_reorder's own on_release already repacked
+        # every row with its generic fill="x" before calling us -- including
+        # "flags", which needs fill="both"/expand=True. A plain click (press
+        # and release with no actual move) writes back an unchanged layout,
+        # so without forcing this, _apply_layout's no-op-on-unchanged-layout
+        # cache would skip re-applying flags' special-cased packing and
+        # leave it stuck at fill="x" until a real reorder happens elsewhere.
+        self._apply_layout(force=True)
 
     def open_add_transaction_dialog(self):
         win, content = make_scrollable_toplevel(self, "Add Transaction", "420x460")
@@ -1135,7 +1150,14 @@ class DashboardTab(ScrollableTab):
             category_hint.config(
                 text="No matching categories yet — this will be uncategorized." if not names else "")
 
-        amount_var.trace_add("write", update_category_choices)
+        trace_id = amount_var.trace_add("write", update_category_choices)
+
+        def close():
+            # Without this, the trace (and everything it closes over --
+            # category_combo, all_categories) outlives the destroyed dialog,
+            # since nothing else ever removes it.
+            amount_var.trace_remove("write", trace_id)
+            win.destroy()
 
         def submit():
             ok, error = submit_new_transaction(
@@ -1146,8 +1168,9 @@ class DashboardTab(ScrollableTab):
                     messagebox.showerror("Invalid entry", error)
                 return
             self.app.refresh_all()
-            win.destroy()
+            close()
 
+        win.protocol("WM_DELETE_WINDOW", close)
         ttk.Button(content, text="Add Transaction", style="Accent.TButton", command=submit).pack(
             anchor="w", padx=14, pady=14)
 
@@ -1155,7 +1178,6 @@ class DashboardTab(ScrollableTab):
         for w in self.needs_attention_rows_frame.winfo_children():
             w.destroy()
         db = self.app.db
-        cur = self.app.reporting_currency()
 
         bills = upcoming_bills(db, within_days=14, today=self.app.today)[:4]
         reimbursements = db.list_outstanding_reimbursements()[:4]
@@ -1183,7 +1205,7 @@ class DashboardTab(ScrollableTab):
             for r in reimbursements:
                 row = ttk.Frame(self.needs_attention_rows_frame, style="Card.TFrame")
                 row.pack(fill="x", pady=2)
-                ttk.Label(row, text=f"{r['owed_by']} owes {fmt_money(r['amount'], cur)} — "
+                ttk.Label(row, text=f"{r['owed_by']} owes {fmt_money(r['amount'], r['currency'])} — "
                                      f"{r['payee'] or '(no payee)'}",
                           style="Card.TLabel").pack(side="left")
                 ttk.Button(row, text="Mark Settled",
@@ -1759,7 +1781,6 @@ class TransactionsTab(ScrollableTab):
         for w in self.reimb_rows_frame.winfo_children():
             w.destroy()
         outstanding = self.app.db.list_outstanding_reimbursements()
-        cur = self.app.reporting_currency()
         if not outstanding:
             ttk.Label(self.reimb_rows_frame, text="Nothing outstanding.",
                       style="CardDim.TLabel").pack(anchor="w")
@@ -1767,7 +1788,7 @@ class TransactionsTab(ScrollableTab):
         for r in outstanding:
             row = ttk.Frame(self.reimb_rows_frame, style="Card.TFrame")
             row.pack(fill="x", pady=2)
-            text = (f"{r['owed_by']} owes {fmt_money(r['amount'], cur)} — "
+            text = (f"{r['owed_by']} owes {fmt_money(r['amount'], r['currency'])} — "
                     f"{r['payee'] or '(no payee)'} on {r['transaction_date']}")
             if r["note"]:
                 text += f"  ({r['note']})"
