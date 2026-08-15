@@ -429,7 +429,7 @@ def build_resizable_section(outer, key, db, min_height=80):
     # exact pixel -- anywhere along the strip drags. Height changes live;
     # the released height is clamped and persisted so it survives the next
     # refresh/app restart.
-    sash_height = 10
+    sash_height = 22
     sash = tk.Frame(outer, height=sash_height, bg=c["border"], cursor="sb_v_double_arrow")
     sash.pack(fill="x")
     sash.pack_propagate(False)
@@ -440,8 +440,8 @@ def build_resizable_section(outer, key, db, min_height=80):
         dots.delete("dot")
         cx = dots.winfo_width() // 2
         cy = sash_height // 2
-        for dx in (-10, 0, 10):
-            dots.create_oval(cx + dx - 1, cy - 1, cx + dx + 2, cy + 2,
+        for dx in (-14, 0, 14):
+            dots.create_oval(cx + dx - 2, cy - 2, cx + dx + 3, cy + 3,
                               fill=c["text_dim"], outline="", tags="dot")
 
     dots.bind("<Configure>", _position_dots)
