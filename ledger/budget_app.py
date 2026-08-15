@@ -422,8 +422,16 @@ def build_resizable_section(outer, key, db, min_height=80):
 
     # Bottom-right corner resize grip -- drag to change this section's
     # height live; the released height is clamped and persisted so it
-    # survives the next refresh/app restart.
-    grip = ttk.Label(outer, text="⤡", style="Dim.TLabel", cursor="size_nw_se")
+    # survives the next refresh/app restart. Hand-drawn (three short
+    # diagonal lines, like a browser textarea's resize handle) rather than
+    # a Unicode glyph -- a glyph the current font doesn't happen to include
+    # would render as nothing, leaving no visible target to grab at all.
+    grip_size = 16
+    grip = tk.Canvas(outer, width=grip_size, height=grip_size, highlightthickness=0,
+                      bg=c["bg"], cursor="size_nw_se")
+    for offset in (4, 8, 12):
+        grip.create_line(offset, grip_size - 2, grip_size - 2, offset,
+                          fill=c["text_dim"], width=1)
     grip.place(relx=1.0, rely=1.0, anchor="se")
     drag_state = {}
 
