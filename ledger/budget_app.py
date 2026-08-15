@@ -1057,9 +1057,18 @@ class DashboardTab(ScrollableTab):
             enable_drag_reorder(visible_rows, self._on_reorder)
 
     def _on_reorder(self, ordered_keys):
+        """Slots the freshly-dragged visible order back into each position a
+        visible section already occupied, leaving every hidden section pinned
+        at its own position -- appending hidden sections to the end instead
+        would silently relocate them (e.g. to the bottom) the next time
+        they're unhidden from Settings, even though the user never dragged
+        them anywhere."""
         layout = resolve_dashboard_layout(self.app.db)
-        hidden_entries = [e for e in layout if not e["visible"]]
-        new_layout = [{"key": k, "visible": True} for k in ordered_keys] + hidden_entries
+        visible_iter = iter(ordered_keys)
+        new_layout = [
+            {"key": next(visible_iter), "visible": True} if entry["visible"] else entry
+            for entry in layout
+        ]
         self.app.db.set_dashboard_layout(new_layout)
         self._apply_layout()
 
@@ -1081,6 +1090,8 @@ class DashboardTab(ScrollableTab):
         category_combo = ttk.Combobox(content, textvariable=category_var,
                                        values=[c["name"] for c in all_categories], state="readonly")
         category_combo.pack(fill="x", padx=14)
+        category_hint = ttk.Label(content, text="", style="Dim.TLabel")
+        category_hint.pack(anchor="w", padx=14, pady=(2, 0))
 
         ttk.Label(content, text="Amount (negative for expenses)", style="TLabel").pack(
             anchor="w", padx=14, pady=(10, 2))
@@ -1097,7 +1108,7 @@ class DashboardTab(ScrollableTab):
             fill="x", padx=14)
         if not accounts:
             ttk.Label(content, text="No accounts yet — this transaction won't be tied to one.",
-                      style="CardDim.TLabel").pack(anchor="w", padx=14, pady=(2, 0))
+                      style="Dim.TLabel").pack(anchor="w", padx=14, pady=(2, 0))
 
         ttk.Label(content, text="Note", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
         note_var = tk.StringVar()
@@ -1121,6 +1132,8 @@ class DashboardTab(ScrollableTab):
             category_combo["values"] = names
             if category_var.get() not in names:
                 category_var.set("")
+            category_hint.config(
+                text="No matching categories yet — this will be uncategorized." if not names else "")
 
         amount_var.trace_add("write", update_category_choices)
 
