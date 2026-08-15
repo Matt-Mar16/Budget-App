@@ -369,7 +369,11 @@ def add_resize_sash(parent, resize_target, persist, min_height=80):
     that wants the same drag-to-resize behavior (e.g. AccountsTab's
     account list)."""
     c = theme.Palette.c
-    sash_height = 22
+    # A thin strip, not a thick bar -- width earlier turned out not to be
+    # the actual problem (see add_resize_sash's own history: the real
+    # blocker was sections that had no sash at all, not this one being too
+    # thin), so there's no functional reason to keep it this tall.
+    sash_height = 6
     sash = tk.Frame(parent, height=sash_height, bg=c["border"], cursor="sb_v_double_arrow")
     sash.pack(fill="x")
     sash.pack_propagate(False)
@@ -380,8 +384,8 @@ def add_resize_sash(parent, resize_target, persist, min_height=80):
         dots.delete("dot")
         cx = dots.winfo_width() // 2
         cy = sash_height // 2
-        for dx in (-14, 0, 14):
-            dots.create_oval(cx + dx - 2, cy - 2, cx + dx + 3, cy + 3,
+        for dx in (-10, 0, 10):
+            dots.create_oval(cx + dx - 1, cy - 1, cx + dx + 2, cy + 2,
                               fill=c["text_dim"], outline="", tags="dot")
 
     dots.bind("<Configure>", _position_dots)
@@ -855,6 +859,15 @@ class App(tk.Tk):
 
         self._build_menu_bar()
         self._build_layout()
+        # Deferred to the window's first real <Map> rather than run here
+        # synchronously: at this point in __init__, mainloop() hasn't
+        # started yet, so the window hasn't actually been mapped by the
+        # window manager and every winfo_height()/winfo_reqheight() call
+        # would see bogus placeholder sizes (measured: 1px) instead of the
+        # real 1220x760-ish geometry -- <Map> is the first point those
+        # measurements are trustworthy.
+        self._auto_size_done = False
+        self.bind("<Map>", self._run_auto_size_once)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         if posted:
@@ -862,6 +875,15 @@ class App(tk.Tk):
             more = f" (+{len(posted) - 5} more)" if len(posted) > 5 else ""
             messagebox.showinfo("Recurring items posted",
                                  f"Posted {len(posted)} due recurring transaction(s): {names}{more}.")
+
+    def _run_auto_size_once(self, _event=None):
+        # <Map> can fire more than once (e.g. minimize/restore) -- only the
+        # very first firing corresponds to the window's initial appearance.
+        if self._auto_size_done:
+            return
+        self._auto_size_done = True
+        self.pages["dashboard"].auto_size_sections_to_fit()
+        self.pages["accounts"].auto_size_list_to_fit()
 
     # ---- shell ----
     def _build_menu_bar(self):
@@ -1273,6 +1295,56 @@ class DashboardTab(ScrollableTab):
         ]
         self.app.db.set_dashboard_layout(new_layout)
         self._apply_layout(force=True)
+
+    def auto_size_sections_to_fit(self):
+        """Called once from App.__init__, after the whole window has its
+        real geometry -- scales every section's height so the page's total
+        natural height matches the actual visible viewport, instead of the
+        hardcoded DASHBOARD_SECTION_DEFAULT_HEIGHTS guesses (tuned by eye,
+        with no idea what the real window size is). Only touches anything
+        if get_dashboard_section_heights() is still empty -- the moment the
+        user drags any section this permanently stops applying, so it can
+        never clobber a manual choice; it only ever fires for a profile
+        that's never been customized."""
+        if self.app.db.get_dashboard_section_heights():
+            return
+        self.update_idletasks()
+        viewport = self._canvas.winfo_height()
+        natural = self.winfo_reqheight()
+        if viewport <= 0 or natural <= 0:
+            return
+
+        current = {}
+        chrome = 0
+        for key in DASHBOARD_SECTION_KEYS:
+            outer = self.section_frames[key]
+            if not outer.winfo_ismapped():
+                continue
+            handle_row, body, sash = outer.winfo_children()
+            canvas = body.winfo_children()[0]
+            h = canvas.winfo_height()
+            current[key] = h
+            chrome += outer.winfo_reqheight() - h
+
+        total_current = sum(current.values())
+        if total_current <= 0:
+            return
+        # No lower clamp -- DASHBOARD_SECTION_MIN_HEIGHT already floors each
+        # individual section below, so letting scale itself go as low as
+        # the real window needs is what actually eliminates the initial
+        # scroll; an artificial floor here would just leave sections
+        # bigger than the window and defeat the point. Upper-clamped so a
+        # very tall/ultra-wide screen can't blow sections up absurdly --
+        # this is a one-time fit, not a promise of an exact pixel match.
+        scale = min(max((viewport - chrome) / total_current, 0.05), 3.0)
+
+        for key, h in current.items():
+            new_h = max(DASHBOARD_SECTION_MIN_HEIGHT, round(h * scale))
+            outer = self.section_frames[key]
+            handle_row, body, sash = outer.winfo_children()
+            canvas = body.winfo_children()[0]
+            canvas.configure(height=new_h)
+            self.app.db.set_dashboard_section_height(key, new_h)
 
     def open_add_transaction_dialog(self):
         win, content = make_scrollable_toplevel(self, "Add Transaction", "420x460")
@@ -3152,6 +3224,32 @@ class AccountsTab(ScrollableTab):
         if not iid or not iid.isdigit():
             return
         self.open_edit_account_dialog()
+
+    def auto_size_list_to_fit(self):
+        """Called once from App.__init__, after the whole window has its
+        real geometry -- gives the account list whatever vertical space is
+        left over in the tab's viewport once everything else (Add Account
+        form, Transfers list, Credit Cards card, button rows) is accounted
+        for, instead of the flat 340px default that has no idea how big
+        the actual window is. Only touches anything if accounts_list_height
+        has never been set -- once the user drags the list this stops
+        applying for good, so it can never override a manual choice."""
+        if self.app.db.get_setting("accounts_list_height") is not None:
+            return
+        self.update_idletasks()
+        viewport = self._canvas.winfo_height()
+        natural = self.winfo_reqheight()
+        if viewport <= 0 or natural <= 0:
+            return
+
+        list_body = self.tree.master.master
+        current_h = list_body.winfo_height()
+        if current_h <= 0:
+            return
+        other_content = natural - current_h
+        new_h = max(120, viewport - other_content)
+        list_body.configure(height=new_h)
+        self.app.db.set_setting("accounts_list_height", str(new_h))
 
     def delete_selected(self):
         for account_id in self._selected_account_ids():
