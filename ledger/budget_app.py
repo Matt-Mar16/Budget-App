@@ -266,8 +266,29 @@ class ScrollableTab(ttk.Frame):
                 return
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_wheel))
-        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+        def _bind_wheel(_e=None):
+            canvas._wheel_funcid = canvas.bind_all("<MouseWheel>", _on_wheel)
+
+        def _unbind_wheel_if_ours(_e=None):
+            # bind_all is process-wide (it affects every widget, not just this
+            # canvas), so only clear it if it's still pointing at OUR handler --
+            # another canvas may have taken it over since via its own <Enter>
+            # (the ordinary handoff), or -- the actual bug this guards against --
+            # this canvas can be destroyed with the pointer still over it (e.g.
+            # closing a dialog via a button inside it, with no mouse movement
+            # first), in which case <Leave> never fires and the stale binding
+            # would otherwise reference a dead widget on the next wheel scroll
+            # anywhere in the app. Unbinding unconditionally here would risk
+            # tearing out some *other*, still-open canvas's active binding
+            # instead of this one's.
+            funcid = getattr(canvas, "_wheel_funcid", None)
+            if funcid and funcid in canvas.bind_all("<MouseWheel>"):
+                canvas.unbind_all("<MouseWheel>")
+            canvas._wheel_funcid = None
+
+        canvas.bind("<Enter>", _bind_wheel)
+        canvas.bind("<Leave>", _unbind_wheel_if_ours)
+        canvas.bind("<Destroy>", _unbind_wheel_if_ours, add="+")
 
     def grid(self, **kw):
         self.wrapper.grid(**kw)
@@ -313,8 +334,24 @@ def make_scrollable_toplevel(parent, title, geometry):
             return
         canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-    canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_wheel))
-    canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+    def _bind_wheel(_e=None):
+        canvas._wheel_funcid = canvas.bind_all("<MouseWheel>", _on_wheel)
+
+    def _unbind_wheel_if_ours(_e=None):
+        # Same guard as ScrollableTab's identical mechanism -- see its comment
+        # for why this can't just unbind_all() unconditionally. This dialog
+        # helper is where it actually matters in practice: a Toplevel gets
+        # destroyed constantly (every Save/Cancel/X click), often with the
+        # pointer still over it, unlike a tab's canvas which persists for the
+        # whole app session and is essentially never destroyed mid-hover.
+        funcid = getattr(canvas, "_wheel_funcid", None)
+        if funcid and funcid in canvas.bind_all("<MouseWheel>"):
+            canvas.unbind_all("<MouseWheel>")
+        canvas._wheel_funcid = None
+
+    canvas.bind("<Enter>", _bind_wheel)
+    canvas.bind("<Leave>", _unbind_wheel_if_ours)
+    canvas.bind("<Destroy>", _unbind_wheel_if_ours, add="+")
 
     return win, content
 
