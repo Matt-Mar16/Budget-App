@@ -970,7 +970,7 @@ class DashboardTab(ScrollableTab):
 
         # Quick Actions -- content added in Task 6
         quick_actions_section = start_section("quick_actions")
-        qa_card = Card(quick_actions_section, title="Quick Actions")
+        qa_card = Card(quick_actions_section, title="")
         qa_card.pack(fill="x", pady=(0, 10))
         self.quick_actions_row = ttk.Frame(qa_card, style="Card.TFrame")
         self.quick_actions_row.pack(fill="x")
@@ -1012,14 +1012,14 @@ class DashboardTab(ScrollableTab):
 
         # Needs Attention -- content added in Task 7
         needs_attention_section = start_section("needs_attention")
-        na_card = Card(needs_attention_section, title="Needs Attention")
+        na_card = Card(needs_attention_section, title="")
         na_card.pack(fill="x", pady=(0, 10))
         self.needs_attention_rows_frame = ttk.Frame(na_card, style="Card.TFrame")
         self.needs_attention_rows_frame.pack(fill="x")
 
         # Flags panel
         flags_section = start_section("flags")
-        flags_card = Card(flags_section, title="Flags & Nudges")
+        flags_card = Card(flags_section, title="")
         flags_card.pack(fill="both", expand=True)
         self.flags_text = tk.Text(flags_card, wrap="word", state="disabled", height=10,
                                    bg=c["card"], fg=c["text"], insertbackground=c["text"],
@@ -1065,7 +1065,7 @@ class DashboardTab(ScrollableTab):
 
     def open_add_transaction_dialog(self):
         win, content = make_scrollable_toplevel(self, "Add Transaction", "420x460")
-        cats = [c["name"] for c in self.app.db.list_categories()]
+        all_categories = self.app.db.list_categories()
         accounts = [a["name"] for a in self.app.db.list_accounts() if a["subtype"] != "roundup_pot"]
 
         ttk.Label(content, text="Date (YYYY-MM-DD)", style="TLabel").pack(anchor="w", padx=14, pady=(14, 2))
@@ -1078,8 +1078,9 @@ class DashboardTab(ScrollableTab):
 
         ttk.Label(content, text="Category", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
         category_var = tk.StringVar()
-        ttk.Combobox(content, textvariable=category_var, values=cats, state="readonly").pack(
-            fill="x", padx=14)
+        category_combo = ttk.Combobox(content, textvariable=category_var,
+                                       values=[c["name"] for c in all_categories], state="readonly")
+        category_combo.pack(fill="x", padx=14)
 
         ttk.Label(content, text="Amount (negative for expenses)", style="TLabel").pack(
             anchor="w", padx=14, pady=(10, 2))
@@ -1094,10 +1095,34 @@ class DashboardTab(ScrollableTab):
         account_var = tk.StringVar()
         ttk.Combobox(content, textvariable=account_var, values=accounts, state="readonly").pack(
             fill="x", padx=14)
+        if not accounts:
+            ttk.Label(content, text="No accounts yet — this transaction won't be tied to one.",
+                      style="CardDim.TLabel").pack(anchor="w", padx=14, pady=(2, 0))
 
         ttk.Label(content, text="Note", style="TLabel").pack(anchor="w", padx=14, pady=(10, 2))
         note_var = tk.StringVar()
         ttk.Entry(content, textvariable=note_var).pack(fill="x", padx=14)
+
+        def update_category_choices(*_):
+            """Mirrors TransactionsTab._update_category_choices: filters to income
+            categories when the typed amount is positive, need/want/saving otherwise,
+            so this popup can't file a paycheck under an expense category (or vice
+            versa) any more easily than the inline form can."""
+            amount_raw = amount_var.get().strip()
+            try:
+                amount = float(amount_raw)
+            except ValueError:
+                names = [c["name"] for c in all_categories]
+            else:
+                if amount > 0:
+                    names = [c["name"] for c in all_categories if c["kind"] == "income"]
+                else:
+                    names = [c["name"] for c in all_categories if c["kind"] != "income"]
+            category_combo["values"] = names
+            if category_var.get() not in names:
+                category_var.set("")
+
+        amount_var.trace_add("write", update_category_choices)
 
         def submit():
             ok, error = submit_new_transaction(
@@ -1182,6 +1207,12 @@ class DashboardTab(ScrollableTab):
         self.app.refresh_all()
 
     def _add_candidate_to_recurring(self, candidate):
+        if "recurring" in get_hidden_nav_tabs(self.app.db):
+            messagebox.showinfo(
+                "Recurring tab hidden",
+                "The Recurring tab is hidden from navigation, so it can't be pre-filled here. "
+                "Unhide it from Settings → Customize Navigation, then try again.")
+            return
         self.app.show_page("recurring")
         self.app.pages["recurring"]._prefill_from_candidate(candidate)
 
