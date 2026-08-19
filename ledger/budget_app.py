@@ -1352,7 +1352,8 @@ class DashboardTab(ScrollableTab):
     def open_add_transaction_dialog(self):
         win, content = make_scrollable_toplevel(self, "Add Transaction", "420x460")
         all_categories = self.app.db.list_categories()
-        accounts = [a["name"] for a in self.app.db.list_accounts() if a["subtype"] != "roundup_pot"]
+        accounts_by_name = {a["name"]: a for a in self.app.db.list_accounts() if a["subtype"] != "roundup_pot"}
+        accounts = list(accounts_by_name.keys())
 
         ttk.Label(content, text="Date (YYYY-MM-DD)", style="TLabel").pack(anchor="w", padx=14, pady=(14, 2))
         date_var = tk.StringVar(value=self.app.today.isoformat())
@@ -1414,11 +1415,22 @@ class DashboardTab(ScrollableTab):
 
         trace_id = amount_var.trace_add("write", update_category_choices)
 
+        def update_currency_from_account(*_):
+            """Mirrors TransactionsTab._update_currency_from_account: fills
+            Currency from the picked account's own currency instead of
+            always defaulting to (and staying at) the reporting currency."""
+            acc = accounts_by_name.get(account_var.get().strip())
+            if acc:
+                currency_var.set(acc["currency"])
+
+        account_trace_id = account_var.trace_add("write", update_currency_from_account)
+
         def close():
-            # Without this, the trace (and everything it closes over --
-            # category_combo, all_categories) outlives the destroyed dialog,
-            # since nothing else ever removes it.
+            # Without this, the traces (and everything they close over --
+            # category_combo, all_categories, accounts_by_name) outlive the
+            # destroyed dialog, since nothing else ever removes them.
             amount_var.trace_remove("write", trace_id)
+            account_var.trace_remove("write", account_trace_id)
             win.destroy()
 
         def submit():
@@ -1886,6 +1898,7 @@ class TransactionsTab(ScrollableTab):
         self.amount_var.trace_add("write", lambda *a: self._update_previews())
         self.account_var.trace_add("write", lambda *a: self._update_previews())
         self.amount_var.trace_add("write", lambda *a: self._update_category_choices())
+        self.account_var.trace_add("write", lambda *a: self._update_currency_from_account())
 
         list_card = Card(self, title="History")
         list_card.pack(fill="both", expand=True)
@@ -2090,6 +2103,19 @@ class TransactionsTab(ScrollableTab):
                     roundup = (nearest - remainder) * multiplier
                     preview_bits.append(f"+{fmt_money(roundup, self.app.reporting_currency())} round-up")
         self.rewards_preview_label.config(text="  ·  ".join(preview_bits))
+
+    def _update_currency_from_account(self, *_):
+        """Fills the Currency field from the newly-picked account's own
+        currency -- previously it always defaulted to (and stayed at) the
+        profile's reporting currency regardless of which account was
+        selected, so adding a transaction to a foreign-currency account
+        meant retyping the currency by hand every time. Only fires on
+        account selection, not on typing in the Currency field itself, so
+        a manual override after picking an account is left alone until the
+        account is changed again."""
+        acc = self.accounts_by_name.get(self.account_var.get().strip())
+        if acc:
+            self.currency_var.set(acc["currency"])
 
     def _update_category_choices(self, *_):
         """Filters the Add-transaction Category dropdown to income categories
@@ -2682,6 +2708,7 @@ class RecurringTab(ScrollableTab):
         self.once_hint_label.grid_remove()
 
         self.freq_var.trace_add("write", lambda *a: self._update_custom_interval_visibility())
+        self.account_var.trace_add("write", lambda *a: self._update_currency_from_account())
 
         list_card = Card(self, title="All Recurring Items")
         list_card.pack(fill="both", expand=True, pady=(0, 10))
@@ -2721,6 +2748,14 @@ class RecurringTab(ScrollableTab):
             self.once_hint_label.grid()
         else:
             self.once_hint_label.grid_remove()
+
+    def _update_currency_from_account(self, *_):
+        """Mirrors TransactionsTab._update_currency_from_account: fills
+        Currency from the picked account's own currency instead of always
+        defaulting to (and staying at) the reporting currency."""
+        acc = getattr(self, "accounts_by_name", {}).get(self.account_var.get().strip())
+        if acc:
+            self.currency_var.set(acc["currency"])
 
     def add_recurring(self):
         name = self.name_var.get().strip()
@@ -2784,6 +2819,7 @@ class RecurringTab(ScrollableTab):
         cats = self.app.db.list_categories()
         self.category_combo["values"] = [c["name"] for c in cats]
         accounts = [a for a in self.app.db.list_accounts() if a["subtype"] != "roundup_pot"]
+        self.accounts_by_name = {a["name"]: a for a in accounts}
         self.account_combo["values"] = [""] + [a["name"] for a in accounts]
 
         for row in self.tree.get_children():
