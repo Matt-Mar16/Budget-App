@@ -2413,6 +2413,7 @@ def test_income_by_category_totals_this_months_positive_transactions(tmp_path):
     db.add_account("Checking", "asset", 0.0, currency="GBP")
     acc_id = db.list_accounts()[0]["id"]
     db.add_category("Salary", "income", 0)
+    db.add_category("Groceries", "need", 0)
     salary_id = next(c["id"] for c in db.list_categories() if c["name"] == "Salary")
     groceries_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries")
     db.add_transaction("2026-08-01", "Employer", salary_id, 2000.0, "GBP", account_id=acc_id)
@@ -2444,9 +2445,7 @@ def test_delete_category_blocked_when_a_transaction_references_it(tmp_path):
     db = _db(tmp_path)
     db.add_account("Checking", "asset", 0.0, currency="GBP")
     acc_id = db.list_accounts()[0]["id"]
-    # "Groceries" already exists as a seeded default category — reuse it
-    # rather than re-adding (add_category has no OR IGNORE, so a literal
-    # re-add collides on the UNIQUE name constraint).
+    db.add_category("Groceries", "need", 0)
     cat_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries")
     db.add_transaction("2026-08-10", "Tesco", cat_id, -50.0, "GBP", account_id=acc_id)
 
@@ -2472,9 +2471,7 @@ def test_delete_category_blocked_when_a_split_references_it(tmp_path):
     db.add_account("Checking", "asset", 0.0, currency="GBP")
     acc_id = db.list_accounts()[0]["id"]
     db.add_category("Household", "want", 100)
-    # "Groceries" already exists as a seeded default category — reuse it
-    # rather than re-adding (add_category has no OR IGNORE, so a literal
-    # re-add collides on the UNIQUE name constraint).
+    db.add_category("Groceries", "need", 0)
     groceries_id = next(c["id"] for c in db.list_categories() if c["name"] == "Groceries")
     household_id = next(c["id"] for c in db.list_categories() if c["name"] == "Household")
     db.add_transaction("2026-08-10", "Tesco", groceries_id, -50.0, "GBP", account_id=acc_id)
@@ -2491,6 +2488,7 @@ def test_delete_category_blocked_when_a_split_references_it(tmp_path):
 
 def test_add_category_assigns_increasing_sort_order(tmp_path):
     db = _db(tmp_path)
+    db.add_category("Placeholder", "want", 0)
     before = max((c["sort_order"] or 0) for c in db.list_categories())
     db.add_category("Zzz New Want", "want", 0)
     added = next(c for c in db.list_categories() if c["name"] == "Zzz New Want")

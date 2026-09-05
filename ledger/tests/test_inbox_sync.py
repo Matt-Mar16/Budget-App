@@ -14,6 +14,7 @@ def _db(tmp_path):
 def test_build_inbox_workbook_lists_current_accounts_and_categories(tmp_path):
     db = _db(tmp_path)
     db.add_account("UK Bank", "asset", 1200.0, currency="GBP")
+    db.add_category("Groceries", "need")
 
     workbook_path = tmp_path / "Inbox.xlsx"
     build_inbox_workbook(db, workbook_path)
@@ -31,6 +32,7 @@ def test_build_inbox_workbook_lists_current_accounts_and_categories(tmp_path):
 def test_sync_inbox_creates_a_transaction_and_clears_the_sheet(tmp_path):
     db = _db(tmp_path)
     db.add_account("UK Bank", "asset", 1200.0, currency="GBP")
+    db.add_category("Groceries", "need")
 
     excel_path = tmp_path / "Inbox.xlsx"
     build_inbox_workbook(db, excel_path)
@@ -59,6 +61,7 @@ def test_sync_inbox_creates_a_transaction_and_clears_the_sheet(tmp_path):
 def test_sync_inbox_updates_account_balance(tmp_path):
     db = _db(tmp_path)
     db.add_account("UK Bank", "asset", 1200.0, currency="GBP")
+    db.add_category("Groceries", "need")
     account_id = db.list_accounts()[0]["id"]
 
     excel_path = tmp_path / "Inbox.xlsx"
@@ -95,6 +98,7 @@ def test_sync_inbox_raises_a_clear_error_for_an_unknown_account_name(tmp_path):
 def test_sync_inbox_writes_a_backup_of_exactly_what_it_pushed(tmp_path):
     db = _db(tmp_path)
     db.add_account("UK Bank", "asset", 1200.0, currency="GBP")
+    db.add_category("Groceries", "need")
 
     excel_path = tmp_path / "Inbox.xlsx"
     build_inbox_workbook(db, excel_path)

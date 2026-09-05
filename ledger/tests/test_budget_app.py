@@ -227,6 +227,7 @@ def test_submit_new_transaction_saves_tags(tmp_path):
 
 def test_submit_new_transaction_asks_before_exceeding_budget_and_respects_decline(tmp_path):
     db = _db(tmp_path)
+    db.add_category("Dining Out", "want")
     cats = {c["name"]: c["id"] for c in db.list_categories()}
     cat_id = cats["Dining Out"]
     db.set_category_budget(cat_id, 20.0)
@@ -243,6 +244,7 @@ def test_submit_new_transaction_asks_before_exceeding_budget_and_respects_declin
 
 def test_submit_new_transaction_proceeds_when_over_budget_confirmed(tmp_path):
     db = _db(tmp_path)
+    db.add_category("Dining Out", "want")
     cats = {c["name"]: c["id"] for c in db.list_categories()}
     cat_id = cats["Dining Out"]
     db.set_category_budget(cat_id, 20.0)
@@ -273,6 +275,7 @@ def test_submit_new_transaction_rejects_a_negative_amount_in_an_income_category(
 
 def test_submit_new_transaction_rejects_a_positive_amount_in_a_spending_category(tmp_path):
     db = _db(tmp_path)
+    db.add_category("Groceries", "need")
     app = _FakeApp(db)
 
     ok, error = submit_new_transaction(

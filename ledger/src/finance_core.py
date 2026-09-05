@@ -382,16 +382,6 @@ class Database:
             for k, v in defaults.items():
                 c.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (k, v))
             c.execute("INSERT OR IGNORE INTO fx_rates(currency, rate_to_reporting) VALUES ('GBP', 1.0)")
-            default_categories = [
-                ("Housing", "need"), ("Groceries", "need"), ("Utilities", "need"),
-                ("Transportation", "need"), ("Insurance", "need"), ("Debt Payments", "need"),
-                ("Dining Out", "want"), ("Entertainment", "want"), ("Shopping", "want"),
-                ("Subscriptions", "want"), ("Travel", "want"),
-                ("Emergency Fund", "saving"), ("Retirement", "saving"), ("Investing", "saving"),
-            ]
-            for i, (name, kind) in enumerate(default_categories):
-                c.execute("INSERT OR IGNORE INTO categories(name, kind, monthly_budget, sort_order) "
-                          "VALUES (?, ?, 0, ?)", (name, kind, i))
 
             # meta: profile self-description, used by profiles.py instead of
             # a central profiles.json. Only stamped if not already present
