@@ -10,7 +10,6 @@ doesn't need it, and simple arithmetic is easy to verify by hand.
 import json
 import sqlite3
 import datetime
-import calendar
 import uuid
 from dataclasses import dataclass
 from statistics import mean, pstdev
@@ -1826,27 +1825,32 @@ def top_payees(db: Database, year, month, limit=10):
 
 
 def daily_spend_totals(db: Database, year, month):
-    """Expense total per day-of-month (1..days_in_month, every day present,
-    0.0 where nothing was spent) — feeds a calendar-style spending heatmap
-    (charts.draw_calendar_heatmap) that renders a literal weekday-aligned
-    grid for one specific real month. Deliberately always a plain calendar
-    month, independent of the month_start_day setting — a custom reporting
-    period spanning two calendar months has no sensible weekday-grid
-    rendering, so this queries transactions directly rather than through
-    Database.transactions_in_month (which IS custom-month-aware). Income
-    is excluded, same convention as top_payees/category_budget_status."""
-    days_in_month = calendar.monthrange(year, month)[1]
-    totals = {day: 0.0 for day in range(1, days_in_month + 1)}
-    prefix = f"{year:04d}-{month:02d}"
+    """Expense total per real calendar date across the reporting period for
+    (year, month) — every date in the period present in order, 0.0 where
+    nothing was spent. Feeds a day-of-period spending heatmap
+    (charts.draw_period_heatmap). Respects month_start_day via month_bounds(),
+    same as Database.transactions_in_month — a previous version deliberately
+    queried a literal calendar month instead (to feed a weekday-grid chart),
+    which silently dropped any transaction that fell in the reporting period
+    but outside that calendar month (e.g. with month_start_day=25, spend from
+    the 1st-24th of the following month never showed up). Income is excluded,
+    same convention as top_payees/category_budget_status."""
+    start_str, end_str = month_bounds(db, year, month)
+    start_date = datetime.date.fromisoformat(start_str)
+    end_date = datetime.date.fromisoformat(end_str)
+    totals = {}
+    d = start_date
+    while d <= end_date:
+        totals[d.isoformat()] = 0.0
+        d += datetime.timedelta(days=1)
     rows = db.conn.execute(
         "SELECT date, amount, currency FROM transactions "
-        "WHERE date LIKE ? AND is_transfer = 0", (prefix + "%",),
+        "WHERE date >= ? AND date <= ? AND is_transfer = 0", (start_str, end_str),
     ).fetchall()
     for t in rows:
         if t["amount"] >= 0:
             continue
-        day = int(t["date"][8:10])
-        totals[day] += -db.to_reporting(t["amount"], t["currency"])
+        totals[t["date"]] += -db.to_reporting(t["amount"], t["currency"])
     return totals
 
 

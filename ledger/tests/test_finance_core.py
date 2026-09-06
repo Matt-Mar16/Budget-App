@@ -1279,38 +1279,34 @@ def test_daily_spend_totals_sums_expenses_per_day_of_month(tmp_path):
 
     result = daily_spend_totals(db, 2026, 9)
 
-    assert result[1] == pytest.approx(25.0)
-    assert result[15] == pytest.approx(30.0)  # income excluded from the day's total
-    assert result[2] == 0.0
+    assert result["2026-09-01"] == pytest.approx(25.0)
+    assert result["2026-09-15"] == pytest.approx(30.0)  # income excluded from the day's total
+    assert result["2026-09-02"] == 0.0
     assert len(result) == 30  # September has 30 days, every day present
 
     db.close()
 
 
-def test_daily_spend_totals_stays_a_plain_calendar_month_regardless_of_month_start_day(tmp_path):
-    # daily_spend_totals feeds a literal weekday-aligned calendar-grid chart
-    # (charts.draw_calendar_heatmap) for one specific real month -- it must
-    # NOT follow month_start_day, since a custom period spanning two
-    # calendar months has no sensible grid rendering. This must stay true
-    # even though the reporting month (2026, 8) with month_start_day=25
-    # extends into September (25 Aug-24 Sep): a 3 Sep transaction belongs
-    # to that reporting period but must NOT appear in daily_spend_totals(2026, 8),
-    # which should show only literal calendar August.
+def test_daily_spend_totals_follows_a_custom_month_start_day_across_the_month_boundary(tmp_path):
+    # With month_start_day=25, reporting period (2026, 8) is the real range
+    # 25 Aug-24 Sep -- daily_spend_totals must cover that whole range (via
+    # month_bounds, same as Database.transactions_in_month), not just literal
+    # calendar August, or spend from the 1st-24th of the following month
+    # silently disappears from the heatmap despite belonging to the period.
     db = _db(tmp_path)
     db.set_setting("month_start_day", "25")
     db.add_transaction(date="2026-08-26", payee="In August", category_id=None,
                         amount=-20.0, currency="GBP")
-    db.add_transaction(date="2026-09-03", payee="In the reporting period but not August",
+    db.add_transaction(date="2026-09-03", payee="In the reporting period, in September",
                         category_id=None, amount=-50.0, currency="GBP")
 
     result = daily_spend_totals(db, 2026, 8)
 
-    assert result[26] == pytest.approx(20.0)
-    # The Sep 3rd transaction must not leak into August's day-3 cell just
-    # because both happen to be valid day numbers -- it belongs to a
-    # different real calendar month entirely.
-    assert result[3] == 0.0
-    assert len(result) == 31  # literal calendar August has 31 days, unaffected by month_start_day
+    assert result["2026-08-26"] == pytest.approx(20.0)
+    assert result["2026-09-03"] == pytest.approx(50.0)
+    assert list(result.keys())[0] == "2026-08-25"
+    assert list(result.keys())[-1] == "2026-09-24"
+    assert len(result) == 31  # 25 Aug-24 Sep inclusive
     db.close()
 
 

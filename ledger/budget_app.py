@@ -4037,7 +4037,7 @@ class InsightsTab(ScrollableTab):
         self.payees_canvas = tk.Canvas(payees_card, height=220, highlightthickness=0, bg=c["card"])
         self.payees_canvas.pack(fill="both", expand=True)
 
-        heatmap_card = Card(self, title="Spending Heatmap — Day of Month")
+        heatmap_card = Card(self, title="Spending Heatmap — Day of Period")
         heatmap_card.pack(fill="x", pady=(0, 10))
         self.heatmap_canvas = tk.Canvas(heatmap_card, height=220, highlightthickness=0, bg=c["card"])
         self.heatmap_canvas.pack(fill="both", expand=True)
@@ -4055,8 +4055,8 @@ class InsightsTab(ScrollableTab):
             c, unit_fmt=lambda v: fmt_money(v, cur))
 
         totals = daily_spend_totals(db, y, m)
-        charts.draw_calendar_heatmap(self.heatmap_canvas, y, m, totals, c,
-                                      unit_fmt=lambda v: fmt_money(v, cur))
+        charts.draw_period_heatmap(self.heatmap_canvas, totals, c,
+                                    unit_fmt=lambda v: fmt_money(v, cur))
 
 
 # --------------------------------------------------------------------------

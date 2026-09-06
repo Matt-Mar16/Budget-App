@@ -10,7 +10,6 @@ a `colors` dict from theme.Palette.c, and re-renders it from scratch —
 simplest possible API for the tabs to call on refresh().
 """
 
-import calendar
 import tkinter as tk
 
 import theme
@@ -332,58 +331,55 @@ def draw_donut_chart(canvas: tk.Canvas, segments, colors, center_label="", cente
         ly += 22
 
 
-def draw_calendar_heatmap(canvas: tk.Canvas, year, month, daily_totals, colors,
-                           unit_fmt=None, force=False):
-    """daily_totals: {day_of_month: total} as returned by
-    finance_core.daily_spend_totals. Shades a calendar grid by spend
-    intensity so day-of-week/day-of-month patterns (e.g. weekend spikes)
-    jump out visually instead of needing to be read off a table."""
+def draw_period_heatmap(canvas: tk.Canvas, daily_totals, colors, unit_fmt=None, force=False):
+    """daily_totals: an ordered {date_iso: total} dict covering every
+    consecutive day of one reporting period, as returned by
+    finance_core.daily_spend_totals. Shades a plain Day-1..Day-N grid (not
+    aligned to real weekdays) by spend intensity, so the chart still renders
+    correctly for a custom month_start_day period that spans two calendar
+    months -- the previous version rendered a literal weekday-aligned
+    calendar grid for one named (year, month), which had no sensible way to
+    show days that belonged to the reporting period but fell in a different
+    real calendar month, and silently dropped them instead."""
     w = canvas.winfo_width() or int(canvas["width"])
     h = canvas.winfo_height() or int(canvas["height"])
     if w < 10 or h < 10:
-        canvas.after(50, lambda: draw_calendar_heatmap(canvas, year, month, daily_totals, colors,
-                                                         unit_fmt, force)
+        canvas.after(50, lambda: draw_period_heatmap(canvas, daily_totals, colors, unit_fmt, force)
                      if canvas.winfo_exists() else None)
         return
-    sig = _sig("heatmap", year, month, tuple(sorted(daily_totals.items())), colors.get("card"), w, h)
-    if not force and _skip_if_clean(canvas, "_sig_heatmap", sig):
+    sig = _sig("period_heatmap", tuple(daily_totals.items()), colors.get("card"), w, h)
+    if not force and _skip_if_clean(canvas, "_sig_period_heatmap", sig):
         return
     canvas.delete("all")
     canvas.create_rectangle(0, 0, w, h, fill=colors["card"], outline="")
 
-    weeks = calendar.Calendar(firstweekday=0).monthdayscalendar(year, month)
-    weekday_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    days = list(daily_totals.items())
+    if not days:
+        return
 
-    top_pad, side_pad = 18, 4
-    cols, rows = 7, len(weeks)
+    top_pad, side_pad = 4, 4
+    cols = 7
+    rows = (len(days) + cols - 1) // cols
     cell_w = (w - side_pad * 2) / cols
     cell_h = (h - top_pad - side_pad) / rows if rows else 0
 
-    for col, label in enumerate(weekday_labels):
-        cx = side_pad + col * cell_w + cell_w / 2
-        canvas.create_text(cx, top_pad / 2, text=label, fill=colors["text_faint"],
-                            font=(theme.Fonts.family, 8))
-
-    max_val = max(daily_totals.values()) if daily_totals else 0
+    max_val = max(v for _, v in days)
     accent = colors.get("bad", colors["accent"])
 
-    for row, week in enumerate(weeks):
-        for col, day in enumerate(week):
-            if day == 0:
-                continue
-            x0 = side_pad + col * cell_w
-            y0 = top_pad + row * cell_h
-            x1, y1 = x0 + cell_w - 2, y0 + cell_h - 2
-            value = daily_totals.get(day, 0.0)
-            t = min(value / max_val, 1.0) if max_val > 0 else 0.0
-            fill = lerp_color(colors["card"], accent, t)
-            rounded_rect(canvas, x0, y0, x1, y1, r=4, fill=fill, outline=colors["grid"])
-            canvas.create_text(x0 + 7, y0 + 8, text=str(day), fill=colors["text_dim"],
-                                font=(theme.Fonts.family, 7), anchor="w")
-            if value > 0:
-                label_text = unit_fmt(value) if unit_fmt else f"{value:,.0f}"
-                canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2 + 6, text=label_text,
-                                    fill=colors["text"], font=(theme.Fonts.family, 7))
+    for i, (_date_iso, value) in enumerate(days):
+        row, col = divmod(i, cols)
+        x0 = side_pad + col * cell_w
+        y0 = top_pad + row * cell_h
+        x1, y1 = x0 + cell_w - 2, y0 + cell_h - 2
+        t = min(value / max_val, 1.0) if max_val > 0 else 0.0
+        fill = lerp_color(colors["card"], accent, t)
+        rounded_rect(canvas, x0, y0, x1, y1, r=4, fill=fill, outline=colors["grid"])
+        canvas.create_text(x0 + 7, y0 + 8, text=f"Day {i + 1}", fill=colors["text_dim"],
+                            font=(theme.Fonts.family, 7), anchor="w")
+        if value > 0:
+            label_text = unit_fmt(value) if unit_fmt else f"{value:,.0f}"
+            canvas.create_text((x0 + x1) / 2, (y0 + y1) / 2 + 6, text=label_text,
+                                fill=colors["text"], font=(theme.Fonts.family, 7))
 
 
 # --------------------------------------------------------------------------
