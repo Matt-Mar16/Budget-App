@@ -19,3 +19,9 @@ __pycache__/
 
 # Superpowers scratch state (visual-companion brainstorm state, per-plan SDD workspaces)
 .superpowers/
+
+# Stale/parallel git worktrees created during agent sessions
+.claude/worktrees/
+
+# Crash dumps
+*.stackdump
